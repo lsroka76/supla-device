@@ -26,13 +26,13 @@
 #include "tools.h"
 #include "supla/network/client.h"
 
-static WiFiClientSecure* staticWiFiClientSecure = nullptr;
+static WiFiClientSecure staticWiFiClientSecure;
 
 namespace Supla {
 class ArduinoEspClient : public Client {
  public:
   ~ArduinoEspClient() {
-    if ((staticWiFiClientSecure == nullptr) && (wifiClient)) {
+    if ((!sslEnabled) && (wifiClient)) {
       wifiClient->stop();
       delete wifiClient;
     }
@@ -46,7 +46,7 @@ class ArduinoEspClient : public Client {
   }
 
   void stop() override {
-    if ((staticWiFiClientSecure == nullptr) && (wifiClient)) {
+    if ((!sslEnabled) && (wifiClient)) {
       wifiClient->stop();
       delete wifiClient;
       wifiClient = nullptr;
@@ -75,9 +75,8 @@ class ArduinoEspClient : public Client {
     stop();
 
     if (sslEnabled) {
-      if (staticWiFiClientSecure == nullptr)
-	staticWiFiClientSecure = new WiFiClientSecure();
-      clientSec = staticWiFiClientSecure;
+      
+      clientSec = &staticWiFiClientSecure;
       wifiClient = clientSec;
 
       wifiClient->setTimeout(timeoutMs);
