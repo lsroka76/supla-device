@@ -216,6 +216,9 @@ void&#160;</td><td class="memItemRight" valign="bottom"><b>attach</b> (<a class=
 <tr class="memitem:a4b6b74c92da14a694952901a1575e955" id="r_a4b6b74c92da14a694952901a1575e955"><td class="memItemLeft" align="right" valign="top">void&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="#a4b6b74c92da14a694952901a1575e955">onLoadConfig</a> (<a class="el" href="classSuplaDeviceClass.html">SuplaDeviceClass</a> *sdc) override</td></tr>
 <tr class="memdesc:a4b6b74c92da14a694952901a1575e955"><td class="mdescLeft">&#160;</td><td class="mdescRight">First method called on element in SuplaDevice.begin().  <br /></td></tr>
 <tr class="separator:a4b6b74c92da14a694952901a1575e955"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="memitem:a97aa1c7c3d0ffac0a7f959fdcd65de68" id="r_a97aa1c7c3d0ffac0a7f959fdcd65de68"><td class="memItemLeft" align="right" valign="top">void&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="#a97aa1c7c3d0ffac0a7f959fdcd65de68">purgeConfig</a> () override</td></tr>
+<tr class="memdesc:a97aa1c7c3d0ffac0a7f959fdcd65de68"><td class="mdescLeft">&#160;</td><td class="mdescRight">Removes all configration data related to the element from Storage::Config.  <br /></td></tr>
+<tr class="separator:a97aa1c7c3d0ffac0a7f959fdcd65de68"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:a6b4b9978a97efea896f8c793aba9221c" id="r_a6b4b9978a97efea896f8c793aba9221c"><td class="memItemLeft" align="right" valign="top">void&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="#a6b4b9978a97efea896f8c793aba9221c">onInit</a> () override</td></tr>
 <tr class="memdesc:a6b4b9978a97efea896f8c793aba9221c"><td class="mdescLeft">&#160;</td><td class="mdescRight">Third method called on element in SuplaDevice.begin()  <br /></td></tr>
 <tr class="separator:a6b4b9978a97efea896f8c793aba9221c"><td class="memSeparator" colspan="2">&#160;</td></tr>
@@ -300,6 +303,15 @@ void&#160;</td><td class="memItemRight" valign="bottom"><b>setTurnOffWhenEmptyAg
 <tr class="separator:a56b9a3505014105aaed55e41c411c31b"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:acf2b51fc0b858940b4585e3bfa9122e9" id="r_acf2b51fc0b858940b4585e3bfa9122e9"><td class="memItemLeft" align="right" valign="top">bool&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="#acf2b51fc0b858940b4585e3bfa9122e9">setAndSaveFunction</a> (uint32_t channelFunction) override</td></tr>
 <tr class="separator:acf2b51fc0b858940b4585e3bfa9122e9"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="memitem:a0423904d3d5f1cc49f42fa0c46e149a7" id="r_a0423904d3d5f1cc49f42fa0c46e149a7"><td class="memItemLeft" align="right" valign="top">void&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="#a0423904d3d5f1cc49f42fa0c46e149a7">setRestartTimerOnToggle</a> (bool restart)</td></tr>
+<tr class="memdesc:a0423904d3d5f1cc49f42fa0c46e149a7"><td class="mdescLeft">&#160;</td><td class="mdescRight">Set restart timer on toggle for staircase and impulse functions.  <br /></td></tr>
+<tr class="separator:a0423904d3d5f1cc49f42fa0c46e149a7"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="memitem:a7cd1f3abe72ebe2b0887029b75ca0896" id="r_a7cd1f3abe72ebe2b0887029b75ca0896"><td class="memItemLeft" align="right" valign="top">bool&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="#a7cd1f3abe72ebe2b0887029b75ca0896">isRestartTimerOnToggle</a> () const</td></tr>
+<tr class="memdesc:a7cd1f3abe72ebe2b0887029b75ca0896"><td class="mdescLeft">&#160;</td><td class="mdescRight">Get restart timer on toggle for staircase and impulse functions.  <br /></td></tr>
+<tr class="separator:a7cd1f3abe72ebe2b0887029b75ca0896"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="memitem:aeb054d1a008da7a700adf56ec1dfbf2c" id="r_aeb054d1a008da7a700adf56ec1dfbf2c"><td class="memItemLeft" align="right" valign="top"><a id="aeb054d1a008da7a700adf56ec1dfbf2c" name="aeb054d1a008da7a700adf56ec1dfbf2c"></a>
+bool&#160;</td><td class="memItemRight" valign="bottom"><b>isFullyInitialized</b> () const</td></tr>
+<tr class="separator:aeb054d1a008da7a700adf56ec1dfbf2c"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="inherit_header pub_methods_classSupla_1_1ChannelElement"><td colspan="2" onclick="javascript:dynsection.toggleInherit('pub_methods_classSupla_1_1ChannelElement')"><img src="closed.png" alt="-"/>&#160;Public Member Functions inherited from <a class="el" href="classSupla_1_1ChannelElement.html">Supla::ChannelElement</a></td></tr>
 <tr class="memitem:aa021153ea264129bda3fc4c642f0e690 inherit pub_methods_classSupla_1_1ChannelElement" id="r_aa021153ea264129bda3fc4c642f0e690"><td class="memItemLeft" align="right" valign="top">
 &#160;</td><td class="memItemRight" valign="bottom"><b>ChannelElement</b> (int channelNumber=-1)</td></tr>
@@ -331,9 +343,6 @@ virtual void&#160;</td><td class="memItemRight" valign="bottom"><b>addAction</b>
 <tr class="memitem:a6c5c3de5e18d235305a87646677919ac inherit pub_methods_classSupla_1_1ElementWithChannelActions" id="r_a6c5c3de5e18d235305a87646677919ac"><td class="memItemLeft" align="right" valign="top">void&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classSupla_1_1ElementWithChannelActions.html#a6c5c3de5e18d235305a87646677919ac">handleSetChannelConfigResult</a> (<a class="el" href="structTSDS__SetChannelConfigResult.html">TSDS_SetChannelConfigResult</a> *result) override</td></tr>
 <tr class="memdesc:a6c5c3de5e18d235305a87646677919ac inherit pub_methods_classSupla_1_1ElementWithChannelActions"><td class="mdescLeft">&#160;</td><td class="mdescRight">Handles "set channel config" reply from server.  <br /></td></tr>
 <tr class="separator:a6c5c3de5e18d235305a87646677919ac inherit pub_methods_classSupla_1_1ElementWithChannelActions"><td class="memSeparator" colspan="2">&#160;</td></tr>
-<tr class="memitem:a0230d0fb743c8cfff02ce21c6cfae360 inherit pub_methods_classSupla_1_1ElementWithChannelActions" id="r_a0230d0fb743c8cfff02ce21c6cfae360"><td class="memItemLeft" align="right" valign="top">void&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classSupla_1_1ElementWithChannelActions.html#a0230d0fb743c8cfff02ce21c6cfae360">purgeConfig</a> () override</td></tr>
-<tr class="memdesc:a0230d0fb743c8cfff02ce21c6cfae360 inherit pub_methods_classSupla_1_1ElementWithChannelActions"><td class="mdescLeft">&#160;</td><td class="mdescRight">Removes all configration data related to the element from Storage::Config.  <br /></td></tr>
-<tr class="separator:a0230d0fb743c8cfff02ce21c6cfae360 inherit pub_methods_classSupla_1_1ElementWithChannelActions"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:aba3b92d1404370e5a595df8a22a0b12c inherit pub_methods_classSupla_1_1ElementWithChannelActions" id="r_aba3b92d1404370e5a595df8a22a0b12c"><td class="memItemLeft" align="right" valign="top">
 void&#160;</td><td class="memItemRight" valign="bottom"><b>clearChannelConfigChangedFlag</b> ()</td></tr>
 <tr class="separator:aba3b92d1404370e5a595df8a22a0b12c inherit pub_methods_classSupla_1_1ElementWithChannelActions"><td class="memSeparator" colspan="2">&#160;</td></tr>
@@ -411,9 +420,15 @@ virtual <a class="el" href="classSupla_1_1Channel.html">Channel</a> *&#160;</td>
 <tr class="memitem:a2da43bb00ea1bccd84d89998e949f7d3 inherit pub_methods_classSupla_1_1Element" id="r_a2da43bb00ea1bccd84d89998e949f7d3"><td class="memItemLeft" align="right" valign="top">void&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classSupla_1_1Element.html#a2da43bb00ea1bccd84d89998e949f7d3">setInitialCaption</a> (const char *caption, bool secondaryChannel=false)</td></tr>
 <tr class="memdesc:a2da43bb00ea1bccd84d89998e949f7d3 inherit pub_methods_classSupla_1_1Element"><td class="mdescLeft">&#160;</td><td class="mdescRight">Sets initial caption.  <br /></td></tr>
 <tr class="separator:a2da43bb00ea1bccd84d89998e949f7d3 inherit pub_methods_classSupla_1_1Element"><td class="memSeparator" colspan="2">&#160;</td></tr>
-<tr class="memitem:a0d9713f2bf118f91e803484c20c63415 inherit pub_methods_classSupla_1_1Element" id="r_a0d9713f2bf118f91e803484c20c63415"><td class="memItemLeft" align="right" valign="top">void&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classSupla_1_1Element.html#a0d9713f2bf118f91e803484c20c63415">setDefaultFunction</a> (int32_t defaultFunction)</td></tr>
-<tr class="memdesc:a0d9713f2bf118f91e803484c20c63415 inherit pub_methods_classSupla_1_1Element"><td class="mdescLeft">&#160;</td><td class="mdescRight">Sets default channel's function.  <br /></td></tr>
-<tr class="separator:a0d9713f2bf118f91e803484c20c63415 inherit pub_methods_classSupla_1_1Element"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="memitem:ae0d75f1ed53558d5f47c485209195c3a inherit pub_methods_classSupla_1_1Element" id="r_ae0d75f1ed53558d5f47c485209195c3a"><td class="memItemLeft" align="right" valign="top">bool&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classSupla_1_1Element.html#ae0d75f1ed53558d5f47c485209195c3a">setDefaultFunction</a> (uint32_t defaultFunction)</td></tr>
+<tr class="memdesc:ae0d75f1ed53558d5f47c485209195c3a inherit pub_methods_classSupla_1_1Element"><td class="mdescLeft">&#160;</td><td class="mdescRight">Sets default channel's function.  <br /></td></tr>
+<tr class="separator:ae0d75f1ed53558d5f47c485209195c3a inherit pub_methods_classSupla_1_1Element"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="memitem:a1f2dea71cf84c6eb0c6bd2f6bfcaf93a inherit pub_methods_classSupla_1_1Element" id="r_a1f2dea71cf84c6eb0c6bd2f6bfcaf93a"><td class="memItemLeft" align="right" valign="top">bool&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classSupla_1_1Element.html#a1f2dea71cf84c6eb0c6bd2f6bfcaf93a">setFunction</a> (uint32_t newFunction)</td></tr>
+<tr class="memdesc:a1f2dea71cf84c6eb0c6bd2f6bfcaf93a inherit pub_methods_classSupla_1_1Element"><td class="mdescLeft">&#160;</td><td class="mdescRight">Sets channel's function.  <br /></td></tr>
+<tr class="separator:a1f2dea71cf84c6eb0c6bd2f6bfcaf93a inherit pub_methods_classSupla_1_1Element"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="memitem:a0221bc2346873fca90d653197bc0b30a inherit pub_methods_classSupla_1_1Element" id="r_a0221bc2346873fca90d653197bc0b30a"><td class="memItemLeft" align="right" valign="top">virtual void&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classSupla_1_1Element.html#a0221bc2346873fca90d653197bc0b30a">onFunctionChange</a> (uint32_t currentFunction, uint32_t newFunction)</td></tr>
+<tr class="memdesc:a0221bc2346873fca90d653197bc0b30a inherit pub_methods_classSupla_1_1Element"><td class="mdescLeft">&#160;</td><td class="mdescRight">Called when channel function changes.  <br /></td></tr>
+<tr class="separator:a0221bc2346873fca90d653197bc0b30a inherit pub_methods_classSupla_1_1Element"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="inherit_header pub_methods_classSupla_1_1LocalAction"><td colspan="2" onclick="javascript:dynsection.toggleInherit('pub_methods_classSupla_1_1LocalAction')"><img src="closed.png" alt="-"/>&#160;Public Member Functions inherited from <a class="el" href="classSupla_1_1LocalAction.html">Supla::LocalAction</a></td></tr>
 <tr class="memitem:a3216ab95a0384acfbb6cea236ab48cc6 inherit pub_methods_classSupla_1_1LocalAction" id="r_a3216ab95a0384acfbb6cea236ab48cc6"><td class="memItemLeft" align="right" valign="top">
 virtual <a class="el" href="classSupla_1_1ActionHandlerClient.html">ActionHandlerClient</a> *&#160;</td><td class="memItemRight" valign="bottom"><b>getHandlerForFirstClient</b> (uint16_t event)</td></tr>
@@ -549,6 +564,9 @@ uint32_t&#160;</td><td class="memItemRight" valign="bottom"><b>overcurrentCheckT
 <tr class="memitem:acbe7fc93edc74067369d4f1f552bd2e8" id="r_acbe7fc93edc74067369d4f1f552bd2e8"><td class="memItemLeft" align="right" valign="top"><a id="acbe7fc93edc74067369d4f1f552bd2e8" name="acbe7fc93edc74067369d4f1f552bd2e8"></a>
 uint32_t&#160;</td><td class="memItemRight" valign="bottom"><b>timerUpdateTimestamp</b> = 0</td></tr>
 <tr class="separator:acbe7fc93edc74067369d4f1f552bd2e8"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="memitem:ab6e4d9ac8041196325912a7f48dd5991" id="r_ab6e4d9ac8041196325912a7f48dd5991"><td class="memItemLeft" align="right" valign="top"><a id="ab6e4d9ac8041196325912a7f48dd5991" name="ab6e4d9ac8041196325912a7f48dd5991"></a>
+uint32_t&#160;</td><td class="memItemRight" valign="bottom"><b>postponeCommTimestamp</b> = 0</td></tr>
+<tr class="separator:ab6e4d9ac8041196325912a7f48dd5991"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:ae981b03462449ec74bb38ebf94cd3f37" id="r_ae981b03462449ec74bb38ebf94cd3f37"><td class="memItemLeft" align="right" valign="top"><a id="ae981b03462449ec74bb38ebf94cd3f37" name="ae981b03462449ec74bb38ebf94cd3f37"></a>
 <a class="el" href="classSupla_1_1Io_1_1Base.html">Supla::Io::Base</a> *&#160;</td><td class="memItemRight" valign="bottom"><b>io</b> = nullptr</td></tr>
 <tr class="separator:ae981b03462449ec74bb38ebf94cd3f37"><td class="memSeparator" colspan="2">&#160;</td></tr>
@@ -561,27 +579,30 @@ uint16_t&#160;</td><td class="memItemRight" valign="bottom"><b>minimumAllowedDur
 <tr class="memitem:abb369d0b7c250b94119932fab0c843c8" id="r_abb369d0b7c250b94119932fab0c843c8"><td class="memItemLeft" align="right" valign="top"><a id="abb369d0b7c250b94119932fab0c843c8" name="abb369d0b7c250b94119932fab0c843c8"></a>
 int16_t&#160;</td><td class="memItemRight" valign="bottom"><b>pin</b> = -1</td></tr>
 <tr class="separator:abb369d0b7c250b94119932fab0c843c8"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="memitem:a5ccbc7082419e685c3abbafa724181f3" id="r_a5ccbc7082419e685c3abbafa724181f3"><td class="memItemLeft" align="right" valign="top"><a id="a5ccbc7082419e685c3abbafa724181f3" name="a5ccbc7082419e685c3abbafa724181f3"></a>
+int16_t&#160;</td><td class="memItemRight" valign="bottom"><b>defaultRelatedMeterChannelNo</b> = -1</td></tr>
+<tr class="separator:a5ccbc7082419e685c3abbafa724181f3"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:a4928e237dabde0f722a8ef34b2a4f04b" id="r_a4928e237dabde0f722a8ef34b2a4f04b"><td class="memItemLeft" align="right" valign="top"><a id="a4928e237dabde0f722a8ef34b2a4f04b" name="a4928e237dabde0f722a8ef34b2a4f04b"></a>
 bool&#160;</td><td class="memItemRight" valign="bottom"><b>highIsOn</b> = true</td></tr>
 <tr class="separator:a4928e237dabde0f722a8ef34b2a4f04b"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:a146e1ccd11e2bc86739be5c129e83c9f" id="r_a146e1ccd11e2bc86739be5c129e83c9f"><td class="memItemLeft" align="right" valign="top"><a id="a146e1ccd11e2bc86739be5c129e83c9f" name="a146e1ccd11e2bc86739be5c129e83c9f"></a>
 bool&#160;</td><td class="memItemRight" valign="bottom"><b>keepTurnOnDurationMs</b> = false</td></tr>
 <tr class="separator:a146e1ccd11e2bc86739be5c129e83c9f"><td class="memSeparator" colspan="2">&#160;</td></tr>
-<tr class="memitem:a91d988b80fd818131e22665e121ed68b" id="r_a91d988b80fd818131e22665e121ed68b"><td class="memItemLeft" align="right" valign="top"><a id="a91d988b80fd818131e22665e121ed68b" name="a91d988b80fd818131e22665e121ed68b"></a>
-bool&#160;</td><td class="memItemRight" valign="bottom"><b>lastStateOnTimerUpdate</b> = false</td></tr>
-<tr class="separator:a91d988b80fd818131e22665e121ed68b"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:af306ff6def60e6d9828c82bed039b0c8" id="r_af306ff6def60e6d9828c82bed039b0c8"><td class="memItemLeft" align="right" valign="top"><a id="af306ff6def60e6d9828c82bed039b0c8" name="af306ff6def60e6d9828c82bed039b0c8"></a>
 bool&#160;</td><td class="memItemRight" valign="bottom"><b>turnOffWhenEmptyAggregator</b> = true</td></tr>
 <tr class="separator:af306ff6def60e6d9828c82bed039b0c8"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:a7ae049aa1b74769dc9c752a163d6215d" id="r_a7ae049aa1b74769dc9c752a163d6215d"><td class="memItemLeft" align="right" valign="top"><a id="a7ae049aa1b74769dc9c752a163d6215d" name="a7ae049aa1b74769dc9c752a163d6215d"></a>
 bool&#160;</td><td class="memItemRight" valign="bottom"><b>initDone</b> = false</td></tr>
 <tr class="separator:a7ae049aa1b74769dc9c752a163d6215d"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="memitem:a0aa3fad4d1851ea0c2c0c6a519c8c11f" id="r_a0aa3fad4d1851ea0c2c0c6a519c8c11f"><td class="memItemLeft" align="right" valign="top"><a id="a0aa3fad4d1851ea0c2c0c6a519c8c11f" name="a0aa3fad4d1851ea0c2c0c6a519c8c11f"></a>
+bool&#160;</td><td class="memItemRight" valign="bottom"><b>restartTimerOnToggle</b> = false</td></tr>
+<tr class="separator:a0aa3fad4d1851ea0c2c0c6a519c8c11f"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="memitem:ab0d008a9c72619ed6b05881edd6dbd19" id="r_ab0d008a9c72619ed6b05881edd6dbd19"><td class="memItemLeft" align="right" valign="top"><a id="ab0d008a9c72619ed6b05881edd6dbd19" name="ab0d008a9c72619ed6b05881edd6dbd19"></a>
+bool&#160;</td><td class="memItemRight" valign="bottom"><b>skipInitialStateSetting</b> = false</td></tr>
+<tr class="separator:ab0d008a9c72619ed6b05881edd6dbd19"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:a070168f9edd6482945d1f36da0cdcc7e" id="r_a070168f9edd6482945d1f36da0cdcc7e"><td class="memItemLeft" align="right" valign="top"><a id="a070168f9edd6482945d1f36da0cdcc7e" name="a070168f9edd6482945d1f36da0cdcc7e"></a>
 int8_t&#160;</td><td class="memItemRight" valign="bottom"><b>stateOnInit</b> = STATE_ON_INIT_OFF</td></tr>
 <tr class="separator:a070168f9edd6482945d1f36da0cdcc7e"><td class="memSeparator" colspan="2">&#160;</td></tr>
-<tr class="memitem:a5ccbc7082419e685c3abbafa724181f3" id="r_a5ccbc7082419e685c3abbafa724181f3"><td class="memItemLeft" align="right" valign="top"><a id="a5ccbc7082419e685c3abbafa724181f3" name="a5ccbc7082419e685c3abbafa724181f3"></a>
-int16_t&#160;</td><td class="memItemRight" valign="bottom"><b>defaultRelatedMeterChannelNo</b> = -1</td></tr>
-<tr class="separator:a5ccbc7082419e685c3abbafa724181f3"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="inherit_header pro_attribs_classSupla_1_1ChannelElement"><td colspan="2" onclick="javascript:dynsection.toggleInherit('pro_attribs_classSupla_1_1ChannelElement')"><img src="closed.png" alt="-"/>&#160;Protected Attributes inherited from <a class="el" href="classSupla_1_1ChannelElement.html">Supla::ChannelElement</a></td></tr>
 <tr class="memitem:aae2e78ba9cd3c3c4d5017223076af9b6 inherit pro_attribs_classSupla_1_1ChannelElement" id="r_aae2e78ba9cd3c3c4d5017223076af9b6"><td class="memItemLeft" align="right" valign="top">
 <a class="el" href="classSupla_1_1Channel.html">Channel</a>&#160;</td><td class="memItemRight" valign="bottom"><b>channel</b></td></tr>
@@ -842,6 +863,26 @@ static bool&#160;</td><td class="memItemRight" valign="bottom"><b>invalidatePtr<
 
 </div>
 </div>
+<a id="a7cd1f3abe72ebe2b0887029b75ca0896" name="a7cd1f3abe72ebe2b0887029b75ca0896"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#a7cd1f3abe72ebe2b0887029b75ca0896">&#9670;&#160;</a></span>isRestartTimerOnToggle()</h2>
+
+<div class="memitem">
+<div class="memproto">
+      <table class="memname">
+        <tr>
+          <td class="memname">bool Relay::isRestartTimerOnToggle </td>
+          <td>(</td>
+          <td class="paramname"><span class="paramname"><em></em></span></td><td>)</td>
+          <td> const</td>
+        </tr>
+      </table>
+</div><div class="memdoc">
+
+<p>Get restart timer on toggle for staircase and impulse functions. </p>
+<dl class="section return"><dt>Returns</dt><dd>true if restart timer on toggle, false if not </dd></dl>
+
+</div>
+</div>
 <a id="a5f418be2a10e8f526b86cefea387b9bd" name="a5f418be2a10e8f526b86cefea387b9bd"></a>
 <h2 class="memtitle"><span class="permalink"><a href="#a5f418be2a10e8f526b86cefea387b9bd">&#9670;&#160;</a></span>iterateAlways()</h2>
 
@@ -1063,6 +1104,35 @@ static bool&#160;</td><td class="memItemRight" valign="bottom"><b>invalidatePtr<
 
 </div>
 </div>
+<a id="a97aa1c7c3d0ffac0a7f959fdcd65de68" name="a97aa1c7c3d0ffac0a7f959fdcd65de68"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#a97aa1c7c3d0ffac0a7f959fdcd65de68">&#9670;&#160;</a></span>purgeConfig()</h2>
+
+<div class="memitem">
+<div class="memproto">
+<table class="mlabels">
+  <tr>
+  <td class="mlabels-left">
+      <table class="memname">
+        <tr>
+          <td class="memname">void Relay::purgeConfig </td>
+          <td>(</td>
+          <td class="paramname"><span class="paramname"><em></em></span></td><td>)</td>
+          <td></td>
+        </tr>
+      </table>
+  </td>
+  <td class="mlabels-right">
+<span class="mlabels"><span class="mlabel override">override</span><span class="mlabel virtual">virtual</span></span>  </td>
+  </tr>
+</table>
+</div><div class="memdoc">
+
+<p>Removes all configration data related to the element from Storage::Config. </p>
+
+<p>Reimplemented from <a class="el" href="classSupla_1_1ElementWithChannelActions.html#a0230d0fb743c8cfff02ce21c6cfae360">Supla::ElementWithChannelActions</a>.</p>
+
+</div>
+</div>
 <a id="acf2b51fc0b858940b4585e3bfa9122e9" name="acf2b51fc0b858940b4585e3bfa9122e9"></a>
 <h2 class="memtitle"><span class="permalink"><a href="#acf2b51fc0b858940b4585e3bfa9122e9">&#9670;&#160;</a></span>setAndSaveFunction()</h2>
 
@@ -1200,6 +1270,31 @@ static bool&#160;</td><td class="memItemRight" valign="bottom"><b>invalidatePtr<
 <dl class="params"><dt>Parameters</dt><dd>
   <table class="params">
     <tr><td class="paramname">value</td><td>Value in 0.01 A. Value of 0 means disabled </td></tr>
+  </table>
+  </dd>
+</dl>
+
+</div>
+</div>
+<a id="a0423904d3d5f1cc49f42fa0c46e149a7" name="a0423904d3d5f1cc49f42fa0c46e149a7"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#a0423904d3d5f1cc49f42fa0c46e149a7">&#9670;&#160;</a></span>setRestartTimerOnToggle()</h2>
+
+<div class="memitem">
+<div class="memproto">
+      <table class="memname">
+        <tr>
+          <td class="memname">void Relay::setRestartTimerOnToggle </td>
+          <td>(</td>
+          <td class="paramtype">bool</td>          <td class="paramname"><span class="paramname"><em>restart</em></span></td><td>)</td>
+          <td></td>
+        </tr>
+      </table>
+</div><div class="memdoc">
+
+<p>Set restart timer on toggle for staircase and impulse functions. </p>
+<dl class="params"><dt>Parameters</dt><dd>
+  <table class="params">
+    <tr><td class="paramname">restart</td><td>true to restart timer on toggle, false to not </td></tr>
   </table>
   </dd>
 </dl>
