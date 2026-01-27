@@ -59,6 +59,7 @@ class Channel : public LocalAction {
                    uint8_t brightness);
   void setNewValue(uint64_t value);
   void setNewValue(const TDSC_RollerShutterValue &value);
+  void setNewValue(const TDSC_FacadeBlindValue &value);
   bool setNewValue(const char *newValue);
 
   void setStateOffline();
@@ -254,9 +255,17 @@ class Channel : public LocalAction {
   uint32_t getChannelType() const;
 
   void setType(uint32_t type);
+
   // setDefault and setDefaultFunction are the same methods.
   // Second was added for better readability
   void setDefault(uint32_t value);
+
+  /**
+   * Set default function.
+   * It can be also used in runtime to set current function.
+   *
+   * @param function
+   */
   void setDefaultFunction(uint32_t function);
   uint32_t getDefaultFunction() const;
   bool isFunctionValid(uint32_t function) const;
@@ -310,10 +319,28 @@ class Channel : public LocalAction {
   bool isInitialCaptionSet() const;
   const char* getInitialCaption() const;
 
+  /**
+   * Sets default icon. Default icon setting is applied by server only when
+   * channel has no icon set (i.e. on channel registration). Changing it
+   * afterwards will have no effect until device is removed from Cloud.
+   *
+   * @param iconId 0..255 (depending on channel's function). 0 is used by
+   *                default. Other values depends on icon availability in
+   *                Cloud. See:
+   * https://github.com/SUPLA/supla-cloud/tree/master/web/assets/img/functions
+   *                File names follows format: "functionId_iconId-variant.svg",
+   *                i.e. 130_2-on.svg - here "2" can be used as iconId for
+   *                function 130 (power switch).
+   */
   void setDefaultIcon(uint8_t iconId);
+
+  /**
+   * Returns default icon
+   *
+   * @return 0..255
+   */
   uint8_t getDefaultIcon() const;
 
-  static uint32_t lastCommunicationTimeMs;
   void fillRawValue(void *value);
   int8_t *getValuePtr();
 
@@ -350,8 +377,9 @@ class Channel : public LocalAction {
 
   char *initialCaption = nullptr;
 
-  uint64_t channelFlags = 0;
   uint32_t functionsBitmap = 0;
+
+  uint64_t channelFlags = 0;
   uint32_t validityTimeSec = 0;
 
   int16_t channelNumber = -1;

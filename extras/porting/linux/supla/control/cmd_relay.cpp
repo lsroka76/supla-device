@@ -19,7 +19,6 @@
 #include "cmd_relay.h"
 
 #include <supla/log_wrapper.h>
-#include <supla/sensor/binary_parsed.h>
 #include <supla/time.h>
 
 #include <cstdio>
@@ -86,7 +85,7 @@ bool Supla::Control::CmdRelay::isOn() {
 }
 
 void Supla::Control::CmdRelay::iterateAlways() {
-  Supla::Control::Relay::iterateAlways();
+  Supla::Control::VirtualRelay::iterateAlways();
 
   if (parser && (millis() - lastReadTime > 100)) {
     refreshParserSource();

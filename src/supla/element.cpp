@@ -147,17 +147,14 @@ bool Element::iterateConnected(void *ptr) {
 
 bool Element::iterateConnected() {
   bool response = true;
-  uint32_t timestamp = millis();
   Channel *secondaryChannel = getSecondaryChannel();
   if (secondaryChannel && secondaryChannel->isUpdateReady()) {
-    secondaryChannel->lastCommunicationTimeMs = timestamp;
     secondaryChannel->sendUpdate();
     response = false;
   }
 
   Channel *channel = getChannel();
   if (channel && channel->isUpdateReady()) {
-    channel->lastCommunicationTimeMs = timestamp;
     channel->sendUpdate();
     response = false;
   }
@@ -336,11 +333,26 @@ void Element::setInitialCaption(const char *caption, bool secondaryChannel) {
   }
 }
 
-void Element::setDefaultFunction(int32_t defaultFunction) {
+bool Element::setDefaultFunction(uint32_t defaultFunction) {
   Supla::Channel *ch = getChannel();
   if (ch) {
+    auto current = ch->getDefaultFunction();
+    if (current == defaultFunction) {
+      return false;
+    }
     ch->setDefaultFunction(defaultFunction);
+    onFunctionChange(current, defaultFunction);
   }
+  return true;
+}
+
+bool Element::setFunction(uint32_t newFunction) {
+  return setDefaultFunction(newFunction);
+}
+
+void Element::onFunctionChange(uint32_t currentFunction, uint32_t newFunction) {
+  (void)(currentFunction);
+  (void)(newFunction);
 }
 
 bool Element::isOwnerOfSubDeviceId(int) const {

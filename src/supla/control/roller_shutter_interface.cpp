@@ -27,6 +27,7 @@
 #include <supla/storage/config_tags.h>
 #include <supla/local_action.h>
 #include <supla/actions.h>
+#include "supla/events.h"
 
 using Supla::Control::RollerShutterInterface;
 
@@ -39,21 +40,31 @@ int16_t RollerShutterInterface::rsStorageSaveDelay = 5000;
 
 #pragma pack(push, 1)
 struct RollerShutterStateData {
-  uint32_t closingTimeMs;
-  uint32_t openingTimeMs;
-  int8_t currentPosition;  // 0 - closed; 100 - opened
+  uint32_t closingTimeMs = 0;
+  uint32_t openingTimeMs = 0;
+  int8_t currentPosition = -1;  // 0 - open; 100 - closed
+};
+
+struct RollerShutterWithTiltStateData {
+  uint32_t closingTimeMs = 0;
+  uint32_t openingTimeMs = 0;
+  int8_t currentPosition = -1;
+  int8_t tiltPosition = -1;
 };
 #pragma pack(pop)
 
-RollerShutterInterface::RollerShutterInterface() {
+RollerShutterInterface::RollerShutterInterface(bool tiltFunctionsSupported) {
   channel.setType(SUPLA_CHANNELTYPE_RELAY);
-  channel.setDefaultFunction(SUPLA_CHANNELFNC_CONTROLLINGTHEROLLERSHUTTER);
   channel.setFuncList(SUPLA_BIT_FUNC_CONTROLLINGTHEROLLERSHUTTER |
                       SUPLA_BIT_FUNC_CONTROLLINGTHEROOFWINDOW |
                       SUPLA_BIT_FUNC_TERRACE_AWNING |
                       SUPLA_BIT_FUNC_ROLLER_GARAGE_DOOR |
                       SUPLA_BIT_FUNC_CURTAIN |
                       SUPLA_BIT_FUNC_PROJECTOR_SCREEN);
+  if (tiltFunctionsSupported) {
+    addTiltFunctions();
+  }
+  channel.setDefaultFunction(SUPLA_CHANNELFNC_CONTROLLINGTHEROLLERSHUTTER);
   channel.setFlag(SUPLA_CHANNEL_FLAG_RUNTIME_CHANNEL_CONFIG_UPDATE);
   usedConfigTypes.set(SUPLA_CONFIG_TYPE_DEFAULT);
 }
@@ -133,10 +144,8 @@ int32_t RollerShutterInterface::handleNewValueFromServer(
 
   int8_t task = newValue->value[0];
   int8_t tilt = newValue->value[1];
-  (void)(tilt);  // silence warning when debug logs are disabled
-  SUPLA_LOG_DEBUG("RS[%d] new value from server: position/task %d, tilt %d",
+  SUPLA_LOG_INFO("RS[%d] new value from server: position/task %d, tilt %d",
       channel.getChannelNumber(), task, tilt);
-  // TODO(klew): add tilt support
   switch (task) {
     case 0: {
       stop();
@@ -173,7 +182,7 @@ int32_t RollerShutterInterface::handleNewValueFromServer(
         moveDown();
       } else if (lastDirectionWasClose()) {
         moveUp();
-      } else if (currentPosition < 50) {
+      } else if (getCurrentPosition() < 50) {
         moveDown();
       } else {
         moveUp();
@@ -182,8 +191,26 @@ int32_t RollerShutterInterface::handleNewValueFromServer(
     }
 
     default: {
+      if (isTiltFunctionEnabled()) {
+        if (tilt < 10 || tilt > 110) {
+          tilt = UNKNOWN_POSITION;
+        } else {
+          tilt -= 10;
+        }
+        if (tilt == UNKNOWN_POSITION) {
+          if (task == 110) {
+            tilt = 100;
+          } else if (task == 10) {
+            tilt = 0;
+          }
+        }
+      } else {
+        tilt = 0;
+      }
       if (task >= 10 && task <= 110) {
-        setTargetPosition(task - 10);
+        setTargetPosition(task - 10, tilt);
+      } else if (task == UNKNOWN_POSITION) {
+        setTargetPosition(UNKNOWN_POSITION, tilt);
       }
       break;
     }
@@ -209,8 +236,36 @@ void RollerShutterInterface::setOpenCloseTime(uint32_t newClosingTimeMs,
   }
 }
 
-void RollerShutterInterface::handleAction(int event, int action) {
-  (void)(event);
+void RollerShutterInterface::setTiltingTime(uint32_t newTiltingTimeMs,
+                                            bool local) {
+  if (isTimeSettingAvailable()) {
+    if (newTiltingTimeMs != tiltConfig.tiltingTime) {
+      tiltConfig.tiltingTime = newTiltingTimeMs;
+      SUPLA_LOG_DEBUG("FB[%d] new tilting time received. Tilting time: %d ms. ",
+                      channel.getChannelNumber(),
+                      tiltConfig.tiltingTime);
+      if (local) {
+        saveConfig();
+      }
+    }
+  }
+}
+
+void RollerShutterInterface::setTiltControlType(uint8_t newTiltControlType,
+                                                bool local) {
+  if (newTiltControlType != tiltConfig.tiltControlType) {
+    tiltConfig.tiltControlType = newTiltControlType;
+    SUPLA_LOG_DEBUG(
+        "FB[%d] new tilt control type received. Tilt control type: %d. ",
+        channel.getChannelNumber(),
+        tiltConfig.tiltControlType);
+    if (local) {
+      saveConfig();
+    }
+  }
+}
+
+void RollerShutterInterface::handleAction(int, int action) {
   switch (action) {
     case CLOSE_OR_STOP: {
       if (inMove()) {
@@ -240,12 +295,30 @@ void RollerShutterInterface::handleAction(int event, int action) {
     }
 
     case COMFORT_DOWN_POSITION: {
-      setTargetPosition(comfortDownValue);
+      setTargetPosition(comfortDownValue, comfortDownTiltValue);
       break;
     }
 
     case COMFORT_UP_POSITION: {
-      setTargetPosition(comfortUpValue);
+      setTargetPosition(comfortUpValue, comfortUpTiltValue);
+      break;
+    }
+
+    case INTERNAL_BUTTON_COMFORT_UP: {
+      if (rsConfig.buttonsUpsideDown == 2) {
+        setTargetPosition(comfortDownValue, comfortDownTiltValue);
+      } else {
+        setTargetPosition(comfortUpValue, comfortUpTiltValue);
+      }
+      break;
+    }
+
+    case INTERNAL_BUTTON_COMFORT_DOWN: {
+      if (rsConfig.buttonsUpsideDown == 2) {
+        setTargetPosition(comfortUpValue, comfortUpTiltValue);
+      } else {
+        setTargetPosition(comfortDownValue, comfortDownTiltValue);
+      }
       break;
     }
 
@@ -261,7 +334,7 @@ void RollerShutterInterface::handleAction(int event, int action) {
         moveDown();
       } else if (lastDirectionWasClose()) {
         moveUp();
-      } else if (currentPosition < 50) {
+      } else if (getCurrentPosition() < 50) {
         moveDown();
       } else {
         moveUp();
@@ -299,6 +372,14 @@ void RollerShutterInterface::handleAction(int event, int action) {
       }
       break;
     }
+    case INTERNAL_BUTTON_MOVE_UP: {
+      if (rsConfig.buttonsUpsideDown == 2) {
+        moveDown();
+      } else {
+        moveUp();
+      }
+      break;
+    }
     case MOVE_DOWN_OR_STOP: {
       if (inMove()) {
         stop();
@@ -319,15 +400,23 @@ void RollerShutterInterface::handleAction(int event, int action) {
       }
       break;
     }
+    case INTERNAL_BUTTON_MOVE_DOWN: {
+      if (rsConfig.buttonsUpsideDown == 2) {
+        moveUp();
+      } else {
+        moveDown();
+      }
+      break;
+    }
   }
 }
 
 void RollerShutterInterface::close() {
-  setTargetPosition(100);
+  setTargetPosition(100, 100);
 }
 
 void RollerShutterInterface::open() {
-  setTargetPosition(0);
+  setTargetPosition(0, 0);
 }
 
 void RollerShutterInterface::moveDown() {
@@ -339,41 +428,79 @@ void RollerShutterInterface::moveUp() {
 }
 
 void RollerShutterInterface::stop() {
-  setTargetPosition(STOP_POSITION);
+  setTargetPosition(STOP_REQUEST);
 }
 
-void RollerShutterInterface::setCurrentPosition(int newPosition) {
-  if (newPosition < 0) {
-    newPosition = 0;
+void RollerShutterInterface::setCurrentPosition(int newPosition, int newTilt) {
+  if (newPosition < UNKNOWN_POSITION) {
+    newPosition = UNKNOWN_POSITION;
   } else if (newPosition > 100) {
     newPosition = 100;
   }
+  if (isTiltFunctionEnabled()) {
+    if (newTilt < UNKNOWN_POSITION) {
+      newTilt = UNKNOWN_POSITION;
+    } else if (newTilt > 100) {
+      newTilt = 100;
+    }
+    currentTilt = newTilt * 100;
+  } else {
+    currentTilt = 0;
+  }
+
   calibrationTime = 0;
-  currentPosition = newPosition;
+  currentPosition = newPosition * 100;
   setCalibrate(false);
 }
 
 void RollerShutterInterface::setNotCalibrated() {
   currentPosition = UNKNOWN_POSITION;
+  if (isTiltFunctionEnabled()) {
+    currentTilt = UNKNOWN_POSITION;
+  } else {
+    currentTilt = 0;
+  }
+
   calibrationTime = 0;
   setCalibrate(false);
 }
 
-void RollerShutterInterface::setTargetPosition(int newPosition) {
+void RollerShutterInterface::setTargetPosition(int newPosition, int newTilt) {
+  SUPLA_LOG_DEBUG("RS[%d] set target position: %d, tilt: %d",
+                  channel.getChannelNumber(),
+                  newPosition,
+                  newTilt);
   targetPosition = newPosition;
-  newTargetPositionAvailable = true;
+  if (isTiltFunctionEnabled()) {
+    if ((targetPosition == UNKNOWN_POSITION || targetPosition >= 0) &&
+        newTilt >= 0) {
+      targetTilt = newTilt;
+    } else {
+      targetTilt = UNKNOWN_POSITION;
+    }
+  } else {
+    targetTilt = -1;
+  }
 
   if (targetPosition == MOVE_UP_POSITION) {
     lastDirection = Directions::UP_DIR;
   } else if (targetPosition == MOVE_DOWN_POSITION) {
     lastDirection = Directions::DOWN_DIR;
-  } else if (targetPosition >= 0) {
-    if (targetPosition < currentPosition) {
+  } else if (targetPosition >= 0 || targetPosition == UNKNOWN_POSITION) {
+    if (targetPosition != UNKNOWN_POSITION &&
+        targetPosition < getCurrentPosition()) {
       lastDirection = Directions::UP_DIR;
-    } else if (targetPosition > currentPosition) {
+    } else if (targetPosition > getCurrentPosition()) {
       lastDirection = Directions::DOWN_DIR;
+    } else if (isTiltFunctionEnabled()) {
+      if (targetTilt < getCurrentTilt()) {
+        lastDirection = Directions::UP_DIR;
+      } else if (targetTilt > getCurrentTilt()) {
+        lastDirection = Directions::DOWN_DIR;
+      }
     }
   }
+  newTargetPositionAvailable = true;
 }
 
 bool RollerShutterInterface::lastDirectionWasOpen() const {
@@ -390,11 +517,11 @@ bool RollerShutterInterface::inMove() {
 
 void RollerShutterInterface::triggerCalibration() {
   setCalibrationNeeded();
-  setTargetPosition(0);
+  setTargetPosition(0, 0);
 }
 
 void RollerShutterInterface::setCalibrationNeeded() {
-  setCurrentPosition(UNKNOWN_POSITION);
+  setCurrentPosition(UNKNOWN_POSITION, UNKNOWN_POSITION);
   setCalibrate(true);
 }
 
@@ -415,6 +542,17 @@ bool RollerShutterInterface::isCalibrationInProgress() const {
   return calibrationTime > 0;
 }
 
+void RollerShutterInterface::startCalibration(uint32_t timeMs) {
+  // Time used for calibaration is 10% higher then requested by user
+  calibrationTime = timeMs * 1.1;
+  currentPosition = 0;
+  currentTilt = 0;
+}
+
+void RollerShutterInterface::stopCalibration() {
+  calibrationTime = 0;
+}
+
 void RollerShutterInterface::setCalibrationOngoing(int calibrationTime) {
   this->calibrationTime = calibrationTime;
 }
@@ -424,26 +562,39 @@ void RollerShutterInterface::setCalibrationFinished() {
   setCalibrate(false);
 }
 
+union RsFbValue {
+  TDSC_RollerShutterValue rs;
+  TDSC_FacadeBlindValue fb;
+};
+
+static_assert(sizeof(TDSC_RollerShutterValue) == sizeof(TDSC_FacadeBlindValue));
+
 void RollerShutterInterface::iterateAlways() {
   if (lastUpdateTime != 0 && millis() - lastUpdateTime < 300) {
     return;
   }
   lastUpdateTime = millis();
-  TDSC_RollerShutterValue value = {};
-  value.position = currentPosition;
+  RsFbValue value = {};
+  value.rs.position = getCurrentPosition();
   if (isCalibrationInProgress()) {
-    value.flags |= RS_VALUE_FLAG_CALIBRATION_IN_PROGRESS;
+    value.rs.flags |= RS_VALUE_FLAG_CALIBRATION_IN_PROGRESS;
   }
   if (isCalibrationFailed()) {
-    value.flags |= RS_VALUE_FLAG_CALIBRATION_FAILED;
+    value.rs.flags |= RS_VALUE_FLAG_CALIBRATION_FAILED;
   }
   if (isCalibrationLost()) {
-    value.flags |= RS_VALUE_FLAG_CALIBRATION_LOST;
+    value.rs.flags |= RS_VALUE_FLAG_CALIBRATION_LOST;
   }
   if (isMotorProblem()) {
-    value.flags |= RS_VALUE_FLAG_MOTOR_PROBLEM;
+    value.rs.flags |= RS_VALUE_FLAG_MOTOR_PROBLEM;
   }
-  channel.setNewValue(value);
+  if (isTiltFunctionEnabled()) {
+    value.fb.tilt = getCurrentTilt();
+    value.fb.flags |= RS_VALUE_FLAG_TILT_IS_SET;
+    channel.setNewValue(value.fb);
+  } else {
+    channel.setNewValue(value.rs);
+  }
 }
 
 void RollerShutterInterface::configComfortUpValue(uint8_t position) {
@@ -460,40 +611,102 @@ void RollerShutterInterface::configComfortDownValue(uint8_t position) {
   }
 }
 
+void RollerShutterInterface::configComfortUpTiltValue(uint8_t position) {
+  comfortUpTiltValue = position;
+  if (comfortUpTiltValue > 100) {
+    comfortUpTiltValue = 100;
+  }
+}
+
+void RollerShutterInterface::configComfortDownTiltValue(uint8_t position) {
+  comfortDownTiltValue = position;
+  if (comfortDownTiltValue > 100) {
+    comfortDownTiltValue = 100;
+  }
+}
+
 void RollerShutterInterface::onLoadState() {
-  RollerShutterStateData data = RollerShutterStateData();
-  if (Supla::Storage::ReadState((unsigned char *)&data, sizeof(data))) {
-    closingTimeMs = data.closingTimeMs;
-    openingTimeMs = data.openingTimeMs;
-    currentPosition = data.currentPosition;
-    if (currentPosition >= 0) {
-      setCalibrate(false);
+  if (isTiltFunctionsSupported()) {
+    RollerShutterWithTiltStateData data;
+    if (Supla::Storage::ReadState((unsigned char *)&data, sizeof(data))) {
+      closingTimeMs = data.closingTimeMs;
+      openingTimeMs = data.openingTimeMs;
+      currentPosition = data.currentPosition * 100;
+      if (currentPosition >= 0) {
+        setCalibrate(false);
+      }
+      currentTilt = data.tiltPosition * 100;
+      SUPLA_LOG_DEBUG(
+          "RS[%d] settings restored from storage. Opening time: %d "
+          "ms; closing time: %d ms. Position: %d, Tilt: %d",
+          channel.getChannelNumber(),
+          openingTimeMs,
+          closingTimeMs,
+          currentPosition,
+          currentTilt);
     }
-    SUPLA_LOG_DEBUG(
-        "RS[%d] settings restored from storage. Opening time: %d "
-        "ms; closing time: %d ms. Position: %d",
-        channel.getChannelNumber(),
-        openingTimeMs,
-        closingTimeMs,
-        currentPosition);
+
+  } else {
+    RollerShutterStateData data;
+    if (Supla::Storage::ReadState((unsigned char *)&data, sizeof(data))) {
+      closingTimeMs = data.closingTimeMs;
+      openingTimeMs = data.openingTimeMs;
+      currentPosition = data.currentPosition * 100;
+      if (currentPosition >= 0) {
+        setCalibrate(false);
+      }
+      SUPLA_LOG_DEBUG(
+          "RS[%d] settings restored from storage. Opening time: %d "
+          "ms; closing time: %d ms. Position: %d",
+          channel.getChannelNumber(),
+          openingTimeMs,
+          closingTimeMs,
+          currentPosition);
+    }
   }
 }
 
 void RollerShutterInterface::onSaveState() {
-  RollerShutterStateData data;
-  data.closingTimeMs = closingTimeMs;
-  data.openingTimeMs = openingTimeMs;
-  data.currentPosition = currentPosition;
+  if (isTiltFunctionsSupported()) {
+    RollerShutterWithTiltStateData data;
+    data.closingTimeMs = closingTimeMs;
+    data.openingTimeMs = openingTimeMs;
+    data.currentPosition = getCurrentPosition();
+    data.tiltPosition = getCurrentTilt();
+    Supla::Storage::WriteState((unsigned char *)&data, sizeof(data));
+  } else {
+    RollerShutterStateData data;
+    data.closingTimeMs = closingTimeMs;
+    data.openingTimeMs = openingTimeMs;
+    data.currentPosition = getCurrentPosition();
 
-  Supla::Storage::WriteState((unsigned char *)&data, sizeof(data));
+    Supla::Storage::WriteState((unsigned char *)&data, sizeof(data));
+  }
 }
 
 int RollerShutterInterface::getCurrentPosition() const {
-  return currentPosition;
+  if (currentPosition < 0) {
+    return UNKNOWN_POSITION;
+  }
+  return (currentPosition) / 100;
+}
+
+int RollerShutterInterface::getCurrentTilt() const {
+  if (isTiltFunctionEnabled() && currentTilt >= 0) {
+    return (currentTilt) / 100;
+  }
+  return UNKNOWN_POSITION;
 }
 
 int RollerShutterInterface::getTargetPosition() const {
   return targetPosition;
+}
+
+int RollerShutterInterface::getTargetTilt() const {
+  if (isTiltFunctionEnabled()) {
+    return targetTilt;
+  }
+  return UNKNOWN_POSITION;
 }
 
 int RollerShutterInterface::getCurrentDirection() const {
@@ -506,6 +719,14 @@ uint32_t RollerShutterInterface::getClosingTimeMs() const {
 
 uint32_t RollerShutterInterface::getOpeningTimeMs() const {
   return openingTimeMs;
+}
+
+uint32_t RollerShutterInterface::getTiltingTimeMs() const {
+  return tiltConfig.tiltingTime;
+}
+
+uint32_t RollerShutterInterface::getTiltControlType() const {
+  return tiltConfig.tiltControlType;
 }
 
 void RollerShutterInterface::attach(Supla::Control::Button *up,
@@ -566,7 +787,7 @@ int RollerShutterInterface::handleCalcfgFromServer(
 Supla::ApplyConfigResult RollerShutterInterface::applyChannelConfig(
     TSD_ChannelConfig *result, bool) {
   SUPLA_LOG_DEBUG(
-      "RS[%d]:applyChannelConfig, func %d, configtype %d, configsize %d",
+      "RS[%d] applyChannelConfig, func %d, configtype %d, configsize %d",
       getChannelNumber(),
       result->Func,
       result->ConfigType,
@@ -592,7 +813,7 @@ Supla::ApplyConfigResult RollerShutterInterface::applyChannelConfig(
           setOpenCloseTime(newConfig->ClosingTimeMS, newConfig->OpeningTimeMS);
         }
         if (!inMove()) {
-          setTargetPosition(STOP_POSITION);
+          setTargetPosition(STOP_REQUEST);
         }
         if (rsConfig.buttonsUpsideDown != 0) {
           if (newConfig->ButtonsUpsideDown > 0) {
@@ -628,6 +849,78 @@ Supla::ApplyConfigResult RollerShutterInterface::applyChannelConfig(
         if (rsConfig.timeMargin > 101) {
           rsConfig.timeMargin = 101;
         }
+        // cleanup tilt config for standard RS functions
+        tiltConfig.clear();
+        saveConfig();
+        printConfig();
+      }
+      break;
+    }
+    case SUPLA_CHANNELFNC_CONTROLLINGTHEFACADEBLIND:
+    case SUPLA_CHANNELFNC_VERTICAL_BLIND: {
+      if (result->ConfigType == 0 &&
+          result->ConfigSize == sizeof(TChannelConfig_FacadeBlind)) {
+        auto newConfig =
+            reinterpret_cast<TChannelConfig_FacadeBlind *>(result->Config);
+        if (newConfig->OpeningTimeMS >= 0 && newConfig->ClosingTimeMS >= 0) {
+          setOpenCloseTime(newConfig->ClosingTimeMS, newConfig->OpeningTimeMS);
+        }
+        if (newConfig->TiltingTimeMS >= 0) {
+          setTiltingTime(newConfig->TiltingTimeMS, false);
+        }
+        tiltConfig.tilt0Angle = newConfig->Tilt0Angle;
+        tiltConfig.tilt100Angle = newConfig->Tilt100Angle;
+        tiltConfig.tiltControlType = newConfig->TiltControlType;
+
+        if (!inMove()) {
+          setTargetPosition(STOP_REQUEST);
+        }
+        if (rsConfig.buttonsUpsideDown != 0) {
+          if (newConfig->ButtonsUpsideDown > 0) {
+            rsConfig.buttonsUpsideDown = newConfig->ButtonsUpsideDown;
+          } else {
+            setChannelConfigNeeded = true;
+          }
+        }
+        if (rsConfig.motorUpsideDown != 0) {
+          if (newConfig->MotorUpsideDown > 0) {
+            rsConfig.motorUpsideDown = newConfig->MotorUpsideDown;
+          } else {
+            setChannelConfigNeeded = true;
+          }
+        }
+        if (rsConfig.timeMargin != 0) {
+          if (newConfig->TimeMargin != 0) {
+            rsConfig.timeMargin = newConfig->TimeMargin;
+          } else {
+            setChannelConfigNeeded = true;
+          }
+        }
+        rsConfig.visualizationType = newConfig->VisualizationType;
+        if (rsConfig.buttonsUpsideDown > 2) {
+          rsConfig.buttonsUpsideDown = 1;
+        }
+        if (rsConfig.motorUpsideDown > 2) {
+          rsConfig.motorUpsideDown = 1;
+        }
+        if (rsConfig.timeMargin < -1) {
+          rsConfig.timeMargin = -1;
+        }
+        if (rsConfig.timeMargin > 101) {
+          rsConfig.timeMargin = 101;
+        }
+        if (isTiltConfigured()) {
+          if (currentTilt == UNKNOWN_POSITION) {
+            setCurrentPosition(getCurrentPosition(), 0);
+          }
+          if (tiltConfig.tiltControlType ==
+                  SUPLA_TILT_CONTROL_TYPE_TILTS_ONLY_WHEN_FULLY_CLOSED &&
+              getCurrentPosition() < 100) {
+            setCurrentPosition(getCurrentPosition(), 0);
+          }
+        } else {
+          setCurrentPosition(getCurrentPosition(), UNKNOWN_POSITION);
+        }
         saveConfig();
         printConfig();
       }
@@ -635,7 +928,7 @@ Supla::ApplyConfigResult RollerShutterInterface::applyChannelConfig(
     }
 
     default: {
-      SUPLA_LOG_WARNING("RS[%d]: Ignoring unsupported channel function %d",
+      SUPLA_LOG_WARNING("RS[%d] Ignoring unsupported channel function %d",
                         getChannelNumber(), result->Func);
       break;
     }
@@ -647,10 +940,14 @@ Supla::ApplyConfigResult RollerShutterInterface::applyChannelConfig(
 
 void RollerShutterInterface::onLoadConfig(SuplaDeviceClass *) {
   auto cfg = Supla::Storage::ConfigInstance();
+  bool print = false;
   if (cfg) {
     loadFunctionFromConfig();
+    loadConfigChangeFlag();
 
     char key[SUPLA_CONFIG_MAX_KEY_SIZE] = {};
+    // RollerShutter config is common for all roller shutter and facade blind
+    // functions
     generateKey(key, Supla::ConfigTag::RollerShutterTag);
     RollerShutterConfig storedConfig = {};
     if (cfg->getBlob(key,
@@ -667,16 +964,30 @@ void RollerShutterInterface::onLoadConfig(SuplaDeviceClass *) {
         rsConfig.timeMargin = storedConfig.timeMargin;
       }
       rsConfig.visualizationType = storedConfig.visualizationType;
-      printConfig();
+      print = true;
     } else {
-      SUPLA_LOG_DEBUG("RS[%d]: using default config", getChannelNumber());
+      SUPLA_LOG_DEBUG("RS[%d] using default config", getChannelNumber());
+    }
+    if (isTiltFunctionEnabled()) {
+      generateKey(key, Supla::ConfigTag::TiltConfigTag);
+      if (cfg->getBlob(key,
+                       reinterpret_cast<char *>(&tiltConfig),
+                       sizeof(TiltConfig))) {
+        print = true;
+      } else {
+        SUPLA_LOG_DEBUG("FB[%d] using default config", getChannelNumber());
+      }
+    }
+
+    if (print) {
+      printConfig();
     }
   }
 }
 
 void RollerShutterInterface::printConfig() const {
   SUPLA_LOG_INFO(
-      "RS[%d]: rsConfig: motor: %s (%d), button: %s (%d), time "
+      "RS[%d] rsConfig: motor: %s (%d), button: %s (%d), time "
       "margin: %d, visualization: %d",
       getChannelNumber(),
       rsConfig.motorUpsideDown == 2 ? "upside down" : "normal",
@@ -685,6 +996,29 @@ void RollerShutterInterface::printConfig() const {
       rsConfig.buttonsUpsideDown,
       rsConfig.timeMargin,
       rsConfig.visualizationType);
+  if (isTiltFunctionEnabled()) {
+    SUPLA_LOG_INFO(
+        "FB[%d] tiltConfig: tiltingTime: %d, tilt0Angle: %d, tilt100Angle: "
+        "%d, "
+        "tiltControlType: %s (%d)",
+        getChannelNumber(),
+        tiltConfig.tiltingTime,
+        tiltConfig.tilt0Angle,
+        tiltConfig.tilt100Angle,
+        tiltConfig.tiltControlType == SUPLA_TILT_CONTROL_TYPE_UNKNOWN
+            ? "UNKNOWN"
+        : tiltConfig.tiltControlType ==
+                SUPLA_TILT_CONTROL_TYPE_CHANGES_POSITION_WHILE_TILTING
+            ? "CHANGES_POSITION_WHILE_TILTING"
+        : tiltConfig.tiltControlType ==
+                SUPLA_TILT_CONTROL_TYPE_TILTS_ONLY_WHEN_FULLY_CLOSED
+            ? "TILTS_ONLY_WHEN_FULLY_CLOSED"
+        : tiltConfig.tiltControlType ==
+                SUPLA_TILT_CONTROL_TYPE_STANDS_IN_POSITION_WHILE_TILTING
+            ? "STANDS_IN_POSITION_WHILE_TILTING"
+            : "UNKNOWN",
+        tiltConfig.tiltControlType);
+  }
 }
 
 void RollerShutterInterface::saveConfig() {
@@ -696,6 +1030,14 @@ void RollerShutterInterface::saveConfig() {
                      reinterpret_cast<char *>(&rsConfig),
                      sizeof(RollerShutterConfig))) {
       cfg->saveWithDelay(2000);
+    }
+    if (isTiltFunctionEnabled()) {
+      generateKey(key, Supla::ConfigTag::TiltConfigTag);
+      if (cfg->setBlob(key,
+                       reinterpret_cast<char *>(&tiltConfig),
+                       sizeof(TiltConfig))) {
+        cfg->saveWithDelay(2000);
+      }
     }
   }
 }
@@ -729,7 +1071,7 @@ void RollerShutterInterface::fillChannelConfig(void *channelConfig,
     case SUPLA_CHANNELFNC_PROJECTOR_SCREEN:
     case SUPLA_CHANNELFNC_CONTROLLINGTHEROOFWINDOW: {
       SUPLA_LOG_DEBUG(
-          "Relay[%d]: fill channel config for RS functions",
+          "RS[%d] fill channel config for RS functions",
           channel.getChannelNumber());
 
       auto config = reinterpret_cast<TChannelConfig_RollerShutter *>(
@@ -743,9 +1085,30 @@ void RollerShutterInterface::fillChannelConfig(void *channelConfig,
       config->ClosingTimeMS = closingTimeMs;
       break;
     }
+    case SUPLA_CHANNELFNC_CONTROLLINGTHEFACADEBLIND:
+    case SUPLA_CHANNELFNC_VERTICAL_BLIND: {
+      SUPLA_LOG_DEBUG(
+          "RS[%d] fill channel config for FB functions",
+          channel.getChannelNumber());
+
+      auto config = reinterpret_cast<TChannelConfig_FacadeBlind *>(
+          channelConfig);
+      *size = sizeof(TChannelConfig_FacadeBlind);
+      config->ButtonsUpsideDown = rsConfig.buttonsUpsideDown;
+      config->MotorUpsideDown = rsConfig.motorUpsideDown;
+      config->TimeMargin = rsConfig.timeMargin;
+      config->VisualizationType = rsConfig.visualizationType;
+      config->OpeningTimeMS = openingTimeMs;
+      config->ClosingTimeMS = closingTimeMs;
+      config->TiltingTimeMS = tiltConfig.tiltingTime;
+      config->Tilt0Angle = tiltConfig.tilt0Angle;
+      config->Tilt100Angle = tiltConfig.tilt100Angle;
+      config->TiltControlType = tiltConfig.tiltControlType;
+      break;
+    }
     default:
       SUPLA_LOG_WARNING(
-          "RS[%d]: fill channel config for unknown function %d",
+          "RS[%d] fill channel config for unknown function %d",
           channel.getChannelNumber(),
           channel.getDefaultFunction());
       return;
@@ -855,6 +1218,9 @@ void RollerShutterInterface::purgeConfig() {
     char key[SUPLA_CONFIG_MAX_KEY_SIZE] = {};
     generateKey(key, Supla::ConfigTag::RollerShutterTag);
     cfg->eraseKey(key);
+
+    generateKey(key, Supla::ConfigTag::TiltConfigTag);
+    cfg->eraseKey(key);
   }
 }
 
@@ -907,10 +1273,22 @@ void RollerShutterInterface::setupButtonActions(
   if (upDirection) {
     button->onInit();  // make sure button was initialized
     if (button->isMonostable()) {
-      button->addAction(asInternal ? Supla::INTERNAL_BUTTON_MOVE_UP_OR_STOP
-                               : Supla::MOVE_UP_OR_STOP,
-                    this,
-                    Supla::CONDITIONAL_ON_PRESS);
+      if (!isTiltFunctionsSupported()) {
+        button->addAction(asInternal ? Supla::INTERNAL_BUTTON_MOVE_UP_OR_STOP
+                                     : Supla::MOVE_UP_OR_STOP,
+                          this,
+                          Supla::CONDITIONAL_ON_PRESS);
+      } else {
+        button->addAction(asInternal ? Supla::INTERNAL_BUTTON_MOVE_UP_OR_STOP
+                                     : Supla::MOVE_UP_OR_STOP,
+                          this,
+                          Supla::ON_CLICK_1);
+        button->addAction(
+            asInternal ? Supla::INTERNAL_BUTTON_MOVE_UP : Supla::MOVE_UP,
+            this,
+            Supla::ON_HOLD);
+        button->addAction(Supla::STOP, this, Supla::ON_HOLD_RELEASE);
+      }
     } else if (button->isBistable()) {
       button->addAction(asInternal ? Supla::INTERNAL_BUTTON_MOVE_UP_OR_STOP
                                : Supla::MOVE_UP_OR_STOP,
@@ -924,10 +1302,22 @@ void RollerShutterInterface::setupButtonActions(
   } else {  // down direction
     button->onInit();  // make sure button was initialized
     if (button->isMonostable()) {
-      button->addAction(asInternal ? Supla::INTERNAL_BUTTON_MOVE_DOWN_OR_STOP
-                                 : Supla::MOVE_DOWN_OR_STOP,
-                      this,
-                      Supla::CONDITIONAL_ON_PRESS);
+      if (!isTiltFunctionsSupported()) {
+        button->addAction(asInternal ? Supla::INTERNAL_BUTTON_MOVE_DOWN_OR_STOP
+                                     : Supla::MOVE_DOWN_OR_STOP,
+                          this,
+                          Supla::CONDITIONAL_ON_PRESS);
+      } else {
+        button->addAction(asInternal ? Supla::INTERNAL_BUTTON_MOVE_DOWN_OR_STOP
+                                     : Supla::MOVE_DOWN_OR_STOP,
+                          this,
+                          Supla::ON_CLICK_1);
+        button->addAction(
+            asInternal ? Supla::INTERNAL_BUTTON_MOVE_DOWN : Supla::MOVE_DOWN,
+            this,
+            Supla::ON_HOLD);
+        button->addAction(Supla::STOP, this, Supla::ON_HOLD_RELEASE);
+      }
     } else if (button->isBistable()) {
       button->addAction(asInternal ? Supla::INTERNAL_BUTTON_MOVE_DOWN_OR_STOP
                                  : Supla::MOVE_DOWN_OR_STOP,
@@ -940,3 +1330,52 @@ void RollerShutterInterface::setupButtonActions(
     }
   }
 }
+
+void RollerShutterInterface::addTiltFunctions() {
+  channel.setFuncList(channel.getFuncList() |
+                      SUPLA_BIT_FUNC_CONTROLLINGTHEFACADEBLIND |
+                      SUPLA_BIT_FUNC_VERTICAL_BLIND);
+}
+
+bool RollerShutterInterface::isTiltFunctionsSupported() const {
+  return channel.getFuncList() &
+         (SUPLA_BIT_FUNC_CONTROLLINGTHEFACADEBLIND |
+          SUPLA_BIT_FUNC_VERTICAL_BLIND);
+}
+
+bool RollerShutterInterface::isTiltFunctionEnabled() const {
+  auto function = channel.getDefaultFunction();
+  return function == SUPLA_CHANNELFNC_CONTROLLINGTHEFACADEBLIND ||
+         function == SUPLA_CHANNELFNC_VERTICAL_BLIND;
+}
+
+void Supla::Control::TiltConfig::clear() {
+  tiltingTime = 0;
+  tilt0Angle = 0;
+  tilt100Angle = 0;
+  tiltControlType = SUPLA_TILT_CONTROL_TYPE_UNKNOWN;
+}
+
+bool RollerShutterInterface::isTiltConfigured() const {
+  return isTiltFunctionEnabled() && tiltConfig.tiltingTime > 0 &&
+    tiltConfig.tiltControlType != 0;
+}
+
+bool RollerShutterInterface::isTopReached() const  {
+  bool posTop = (currentPosition == 0);
+  bool tiltTop = !isTiltFunctionEnabled();
+  if (!tiltTop) {
+    tiltTop = isTiltConfigured() && (currentTilt == 0);
+  }
+  return posTop && tiltTop;
+}
+
+bool RollerShutterInterface::isBottomReached() const {
+  bool posBottom = (currentPosition == 10000);
+  bool tiltBottom = !isTiltFunctionEnabled();
+  if (!tiltBottom) {
+    tiltBottom = isTiltConfigured() && (currentTilt == 10000);
+  }
+  return posBottom && tiltBottom;
+}
+

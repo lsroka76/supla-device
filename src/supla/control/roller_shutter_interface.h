@@ -26,6 +26,7 @@
 #define STOP_POSITION      -2
 #define MOVE_UP_POSITION   -3
 #define MOVE_DOWN_POSITION -4
+#define STOP_REQUEST       -5
 #define RS_DEFAULT_OPERATION_TIMEOUT_MS 60000
 
 namespace Supla {
@@ -45,17 +46,88 @@ struct RollerShutterConfig {
                            // > 1 - 51% of opening/closing time added on extreme
                            // positions - value should be decremented by 1.
   uint8_t visualizationType = 0;  // 0 - default, other values depends on
-                                    // Cloud and App support
+                                  // Cloud and App support
+};
+
+struct TiltConfig {
+  uint32_t tiltingTime = 0;
+  uint16_t tilt0Angle = 0;    // 0 - 180 - degree corresponding to tilt 0
+  uint16_t tilt100Angle = 0;  // 0 - 180 - degree corresponding to tilt 100
+  uint8_t tiltControlType =
+      SUPLA_TILT_CONTROL_TYPE_UNKNOWN;  // SUPLA_TILT_CONTROL_TYPE_
+
+  void clear();
 };
 #pragma pack(pop)
 
 class RollerShutterInterface : public ChannelElement, public ActionHandler {
  public:
-  RollerShutterInterface();
+  /**
+   * Constructor.
+   * Changing of tilt functions will breake state storage. So make sure
+   * that those functions are enabled before the first device startup.
+   * You can enable them in existing devices as well, but make sure that
+   * you don't have anything important in state storage (i.e. Electricity
+   * Meter data).
+   *
+   * @param tiltFunctionsEnabled true if tilt functions should be added
+   */
+  explicit RollerShutterInterface(bool tiltFunctionsEnabled = false);
+
+  /**
+   * Destructor
+   */
   virtual ~RollerShutterInterface();
 
   RollerShutterInterface(const RollerShutterInterface &) = delete;
   RollerShutterInterface &operator=(const RollerShutterInterface &) = delete;
+
+  /**
+   * Add tilt functions (facade blinds, vertical blinds)
+   * Changing of tilt functions will breake state storage. So make sure
+   * that those functions are enabled before the first device startup.
+   * You can enable them in existing devices as well, but make sure that
+   * you don't have anything important in state storage (i.e. Electricity
+   * Meter data).
+   *
+   */
+  void addTiltFunctions();
+
+  /**
+   * Check if tilt functions are supported
+   *
+   * @return true if tilt functions are supported
+   */
+  bool isTiltFunctionsSupported() const;
+
+  /**
+   * Check if tilt function is currently enabled
+   *
+   * @return true if tilt function is enabled
+   */
+  bool isTiltFunctionEnabled() const;
+
+  /**
+   * Check if tilting is configured (time and control modes are set and
+   * isTiltFunctionEnabled is true)
+   *
+   * @return true if tilting is configured
+   */
+  bool isTiltConfigured() const;
+
+  /**
+   * Check if top position (and tilt if applicable) is reached
+   *
+   * @return true if top position is reached
+   */
+  bool isTopReached() const;
+
+  /**
+   * Check if bottom position (and tilt if applicable) is reached
+   *
+   * @return true if bottom position is reached
+   */
+  bool isBottomReached() const;
 
   int32_t handleNewValueFromServer(TSD_SuplaChannelNewValue *newValue) override;
   void handleAction(int event, int action) override;
@@ -79,8 +151,16 @@ class RollerShutterInterface : public ChannelElement, public ActionHandler {
   virtual void moveDown();  // starts closing roller shutter regardless of its
                             // position (keep motor going down)
 
-  virtual void setTargetPosition(int newPosition);
-  void setCurrentPosition(int newPosition);
+  virtual void setTargetPosition(int newPosition,
+                                 int newTilt = UNKNOWN_POSITION);
+  /**
+   * Set current roller shutter/facade blind position (and tilt)
+   * (0 = open; 100 = closed)
+   *
+   * @param newPosition
+   * @param newTilt
+   */
+  void setCurrentPosition(int newPosition, int newTilt = UNKNOWN_POSITION);
   void setNotCalibrated();
   // Sets calibration ongoing flag, by setting calibration timeout.
   // calibrationTime = 1 is used to indicate ongoing calibration for
@@ -88,14 +168,48 @@ class RollerShutterInterface : public ChannelElement, public ActionHandler {
   void setCalibrationOngoing(int calibrationTime = 1);
   void setCalibrationFinished();
 
+  /**
+   * Get current roller shutter position
+   *
+   * @return 0-100 (0 = open; 100 = closed); -1 if unknown
+   */
   int getCurrentPosition() const;
+
+  /**
+   * Get current tilt position
+   *
+   * @return 0-100 (0 = final position after move up; 100 = final position after
+   *         move down); -1 if unknown or N/A
+   */
+  int getCurrentTilt() const;
+
+  /**
+   * Get target roller shutter position
+   *
+   * @return 0-100 (0 = open; 100 = closed); -1 if unknown, -2 if stop,
+   *         -3 if move up, -4 if move down
+   */
   int getTargetPosition() const;
-  // Get current roller shutter movement direction. Returns int value of
-  // enum Supla::Control::Directions
+
+  /**
+   * Get target tilt position
+   *
+   * @return 0-100 (0 = final position after move up; 100 = final position after
+   *         move down); -1 if unknown or N/A
+   */
+  int getTargetTilt() const;
+
+  /**
+   * Get current roller shutter movement direction
+   *
+   * @return int value of enum Supla::Control::Directions
+   */
   int getCurrentDirection() const;
 
   void configComfortUpValue(uint8_t position);
   void configComfortDownValue(uint8_t position);
+  void configComfortUpTiltValue(uint8_t position);
+  void configComfortDownTiltValue(uint8_t position);
 
   void onInit() override;
   void onLoadConfig(SuplaDeviceClass *sdc) override;
@@ -107,6 +221,8 @@ class RollerShutterInterface : public ChannelElement, public ActionHandler {
 
   uint32_t getClosingTimeMs() const;
   uint32_t getOpeningTimeMs() const;
+  uint32_t getTiltingTimeMs() const;
+  uint32_t getTiltControlType() const;
 
   void attach(Supla::Control::Button *up, Supla::Control::Button *down);
   void attach(Supla::Control::Button *button, bool upButton, bool asInternal);
@@ -116,12 +232,57 @@ class RollerShutterInterface : public ChannelElement, public ActionHandler {
   bool isCalibrationRequested() const;
   bool isCalibrated() const;
 
+  /**
+   * Enable/disable motor upside down configuration option. If enabled,
+   * then motor upside down can be set in configuration.
+   * If disabled, then motor upside down can not be set in configuration.
+   *
+   * @param enable
+   */
   void setRsConfigMotorUpsideDownEnabled(bool enable);
+
+  /**
+   * Enable/disable buttons upside down configuration option. If enabled,
+   * then buttons upside down can be set in configuration.
+   * If disabled, then buttons upside down can not be set in configuration.
+   *
+   * @param enable
+   */
   void setRsConfigButtonsUpsideDownEnabled(bool enable);
+
+  /**
+   * Enable/disable time margin configuration option. If enabled,
+   * then time margin can be set in configuration.
+   * If disabled, then time margin can not be set in configuration.
+   *
+   * @param enable
+   */
   void setRsConfigTimeMarginEnabled(bool enable);
 
+  /**
+   * Set motor upside down value. Works only if motor upside down
+   * configuration option is enabled.
+   *
+   * @param value 0 - not set/not used, 1 - false, 2 - true
+   */
   void setRsConfigMotorUpsideDownValue(uint8_t value);
+
+  /**
+   * Set buttons upside down value. Works only if buttons upside down
+   * configuration option is enabled.
+   *
+   * @param value 0 - not set/not used, 1 - false, 2 - true
+   */
   void setRsConfigButtonsUpsideDownValue(uint8_t value);
+
+  /**
+   * Set time margin value. Works only if time margin configuration option
+   * is enabled.
+   *
+   * @param value -1 (use device specific default), 0 (not set/not used),
+   * 1 (no margin), > 1 (51% of opening/closing time added on extreme
+   * positions)
+   */
   void setRsConfigTimeMarginValue(int8_t value);
 
   uint8_t getMotorUpsideDown() const;
@@ -132,6 +293,8 @@ class RollerShutterInterface : public ChannelElement, public ActionHandler {
 
   virtual bool inMove();
   virtual bool isCalibrationInProgress() const;
+  void startCalibration(uint32_t timeMs);
+  void stopCalibration();
   bool isCalibrationFailed() const;
   bool isCalibrationLost() const;
   bool isMotorProblem() const;
@@ -140,6 +303,8 @@ class RollerShutterInterface : public ChannelElement, public ActionHandler {
   bool isAutoCalibrationSupported() const;
 
   void setOpenCloseTime(uint32_t newClosingTimeMs, uint32_t newOpeningTimeMs);
+  void setTiltingTime(uint32_t newTiltingTimeMs, bool local = true);
+  void setTiltControlType(uint8_t newTiltControlType, bool local = true);
 
   void setCalibrationFailed(bool value);
   void setCalibrationLost(bool value);
@@ -180,16 +345,25 @@ class RollerShutterInterface : public ChannelElement, public ActionHandler {
 
   uint8_t comfortDownValue = 20;
   uint8_t comfortUpValue = 80;
+  uint8_t comfortUpTiltValue = 0;
+  uint8_t comfortDownTiltValue = 100;
 
   Directions currentDirection = Directions::STOP_DIR;  // stop, up, down
   Directions lastDirection = Directions::STOP_DIR;
 
-  int8_t currentPosition = UNKNOWN_POSITION;  // 0 - closed; 100 - opened
-  int8_t targetPosition = STOP_POSITION;      // 0-100
-  int8_t lastPositionBeforeMovement = UNKNOWN_POSITION;  // 0-100
+  int16_t currentPosition =
+      UNKNOWN_POSITION;  // 0 - open; 10000 - closed, in 0.01 units
+  int16_t currentTilt =
+      UNKNOWN_POSITION;  // 0 - opening position
+                         // 10000 - closing position, in 0.01 units
+  int8_t targetPosition = STOP_POSITION;         // 0-100
+  int8_t targetTilt = UNKNOWN_POSITION;          // 0-100
+  int16_t lastPositionBeforeMovement = UNKNOWN_POSITION;  // 0-100
+  int16_t lastTiltBeforeMovement = UNKNOWN_POSITION;      // 0-100
   bool newTargetPositionAvailable = false;
 
   RollerShutterConfig rsConfig;
+  TiltConfig tiltConfig;
 
   ButtonListElement *buttonList = nullptr;
 

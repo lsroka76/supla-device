@@ -42,8 +42,10 @@ void Supla::Control::ActionTrigger::attach(Supla::Control::Button &button) {
   attach(&button);
 }
 
-void Supla::Control::ActionTrigger::handleAction(int event, int action) {
-  (void)(event);
+void Supla::Control::ActionTrigger::handleAction(int, int action) {
+  if (!enabled) {
+    return;
+  }
   uint32_t actionCap = getActionTriggerCap(action);
 
   if (actionCap & activeActionsFromServer ||
@@ -268,6 +270,9 @@ void Supla::Control::ActionTrigger::parseActiveActionsFromServer() {
                                               Supla::ON_CHANGE);
           attachedButton->disableOtherClients(this,
                                               Supla::CONDITIONAL_ON_CHANGE);
+        } else if (eventId == Supla::ON_HOLD) {
+          attachedButton->disableOtherClients(this,
+                                              Supla::ON_HOLD_RELEASE);
         }
       } else if (disablesLocalOperation & actionCap) {
         attachedButton->enableOtherClients(this, eventId);
@@ -282,6 +287,9 @@ void Supla::Control::ActionTrigger::parseActiveActionsFromServer() {
                                              Supla::ON_CHANGE);
           attachedButton->enableOtherClients(this,
                                              Supla::CONDITIONAL_ON_CHANGE);
+        } else if (eventId == Supla::ON_HOLD) {
+          attachedButton->enableOtherClients(this,
+                                             Supla::ON_HOLD_RELEASE);
         }
         if (makeSureThatOnClick1IsDisabled && eventId == Supla::ON_CLICK_1) {
           makeSureThatOnClick1IsDisabled = false;
@@ -613,5 +621,13 @@ bool Supla::Control::ActionTrigger::isAnyActionEnabledOnServer() const {
 
 void Supla::Control::ActionTrigger::setAlwaysUseOnClick1() {
   alwaysUseOnClick1 = true;
+}
+
+void Supla::Control::ActionTrigger::enable() {
+  enabled = true;
+}
+
+void Supla::Control::ActionTrigger::disable() {
+  enabled = false;
 }
 

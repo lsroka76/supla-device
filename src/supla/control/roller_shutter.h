@@ -29,17 +29,43 @@ namespace Control {
 
 class RollerShutter : public RollerShutterInterface {
  public:
+   /**
+    * Constructor.
+    *
+    * @param io Supla::Io inteface (if other than default)
+    * @param pinUp GPIO pin used for moving up
+    * @param pinDown GPIO pin used for moving down
+    * @param highIsOn true for active high
+    * @param tiltFunctionsEnabled true to enable tilt functions (changing this
+    *        value will reset state storage)
+    */
   RollerShutter(Supla::Io::Base *io,
                 int pinUp,
                 int pinDown,
-                bool highIsOn = true);
-  RollerShutter(int pinUp, int pinDown, bool highIsOn = true);
+                bool highIsOn = true,
+                bool tiltFunctionsEnabled = false);
+  /**
+   * Constructor.
+   *
+   * @param pinUp GPIO pin used for moving up
+   * @param pinDown GPIO pin used for moving down
+   * @param highIsOn true for active high
+   * @param tiltFunctionsEnabled true to enable tilt functions (changing this
+   *        value will reset state storage)
+   */
+  RollerShutter(int pinUp = -1,
+                int pinDown = -1,
+                bool highIsOn = true,
+                bool tiltFunctionsEnabled = false);
 
   void onInit() override;
   void onTimer() override;
 
   void setPinUp(int pin);
   void setPinDown(int pin);
+
+  void setTargetPosition(int newPosition,
+                         int newTilt = UNKNOWN_POSITION) override;
 
  protected:
   virtual void stopMovement();
@@ -50,6 +76,7 @@ class RollerShutter : public RollerShutterInterface {
   virtual void startClosing();
   virtual void startOpening();
   virtual void switchOffRelays();
+  void calculateCurrentPositionAndTilt();
 
   void initGpio(int gpio);
 

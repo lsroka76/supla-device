@@ -34,14 +34,12 @@
 
 using Supla::Channel;
 
-uint32_t Channel::lastCommunicationTimeMs = 0;
 Channel *Channel::firstPtr = nullptr;
 
 #ifdef SUPLA_TEST
 // Method used in tests to restore default values for static members
 void Supla::Channel::resetToDefaults() {
   Supla::RegisterDevice::resetToDefaults();
-  lastCommunicationTimeMs = 0;
 }
 #endif
 
@@ -238,13 +236,13 @@ void Channel::setNewValue(int32_t value) {
   }
 }
 
-void Channel::setNewValue(bool state) {
+void Channel::setNewValue(bool newValueState) {
   char newValue[SUPLA_CHANNELVALUE_SIZE] = {};
   static_assert(sizeof(newValue) == sizeof(value));
 
   memcpy(newValue, &value, sizeof(value));
 
-  newValue[0] = state;
+  newValue[0] = newValueState;
   if (setNewValue(newValue)) {
     if (getValueBool()) {
       runAction(Supla::ON_TURN_ON);
@@ -254,7 +252,8 @@ void Channel::setNewValue(bool state) {
     runAction(Supla::ON_CHANGE);
     runAction(ON_SECONDARY_CHANNEL_CHANGE);
 
-    SUPLA_LOG_DEBUG("Channel(%d) value changed to %d", channelNumber, state);
+    SUPLA_LOG_DEBUG(
+        "Channel(%d) value changed to %d", channelNumber, newValueState);
   }
 }
 
@@ -499,6 +498,18 @@ void Channel::setNewValue(const TDSC_RollerShutterValue &value) {
     runAction(ON_SECONDARY_CHANNEL_CHANGE);
     SUPLA_LOG_DEBUG("Channel(%d) value changed to %d", channelNumber,
         value.position);
+  }
+}
+
+void Channel::setNewValue(const TDSC_FacadeBlindValue &value) {
+  char newValue[SUPLA_CHANNELVALUE_SIZE] = {};
+  memcpy(newValue, &value, sizeof(TDSC_FacadeBlindValue));
+
+  if (setNewValue(newValue)) {
+    runAction(ON_CHANGE);
+    runAction(ON_SECONDARY_CHANNEL_CHANGE);
+    SUPLA_LOG_DEBUG("Channel(%d) value changed to %d, tilt %d", channelNumber,
+        value.position, value.tilt);
   }
 }
 
@@ -1640,24 +1651,56 @@ bool Channel::isFunctionValid(uint32_t function) const {
     }
     case ChannelType::RELAY: {
       switch (function) {
-        case SUPLA_CHANNELFNC_CONTROLLINGTHEGATEWAYLOCK:
-        case SUPLA_CHANNELFNC_CONTROLLINGTHEGATE:
-        case SUPLA_CHANNELFNC_CONTROLLINGTHEGARAGEDOOR:
-        case SUPLA_CHANNELFNC_CONTROLLINGTHEDOORLOCK:
-        case SUPLA_CHANNELFNC_CONTROLLINGTHEROLLERSHUTTER:
-        case SUPLA_CHANNELFNC_CONTROLLINGTHEROOFWINDOW:
-        case SUPLA_CHANNELFNC_POWERSWITCH:
-        case SUPLA_CHANNELFNC_LIGHTSWITCH:
-        case SUPLA_CHANNELFNC_STAIRCASETIMER:
-        case SUPLA_CHANNELFNC_CONTROLLINGTHEFACADEBLIND:
-        case SUPLA_CHANNELFNC_TERRACE_AWNING:
-        case SUPLA_CHANNELFNC_PROJECTOR_SCREEN:
-        case SUPLA_CHANNELFNC_CURTAIN:
-        case SUPLA_CHANNELFNC_VERTICAL_BLIND:
-        case SUPLA_CHANNELFNC_ROLLER_GARAGE_DOOR:
-        case SUPLA_CHANNELFNC_PUMPSWITCH:
+        case SUPLA_CHANNELFNC_CONTROLLINGTHEGATEWAYLOCK: {
+          return getFuncList() & SUPLA_CHANNELFNC_CONTROLLINGTHEGATEWAYLOCK;
+        }
+        case SUPLA_CHANNELFNC_CONTROLLINGTHEGATE: {
+          return getFuncList() & SUPLA_CHANNELFNC_CONTROLLINGTHEGATE;
+        }
+        case SUPLA_CHANNELFNC_CONTROLLINGTHEGARAGEDOOR: {
+          return getFuncList() & SUPLA_CHANNELFNC_CONTROLLINGTHEGARAGEDOOR;
+        }
+        case SUPLA_CHANNELFNC_CONTROLLINGTHEDOORLOCK: {
+          return getFuncList() & SUPLA_CHANNELFNC_CONTROLLINGTHEDOORLOCK;
+        }
+        case SUPLA_CHANNELFNC_CONTROLLINGTHEROLLERSHUTTER: {
+          return getFuncList() & SUPLA_CHANNELFNC_CONTROLLINGTHEROLLERSHUTTER;
+        }
+        case SUPLA_CHANNELFNC_CONTROLLINGTHEROOFWINDOW: {
+          return getFuncList() & SUPLA_CHANNELFNC_CONTROLLINGTHEROOFWINDOW;
+        }
+        case SUPLA_CHANNELFNC_POWERSWITCH: {
+          return getFuncList() & SUPLA_CHANNELFNC_POWERSWITCH;
+        }
+        case SUPLA_CHANNELFNC_LIGHTSWITCH: {
+          return getFuncList() & SUPLA_CHANNELFNC_LIGHTSWITCH;
+        }
+        case SUPLA_CHANNELFNC_STAIRCASETIMER: {
+          return getFuncList() & SUPLA_CHANNELFNC_STAIRCASETIMER;
+        }
+        case SUPLA_CHANNELFNC_CONTROLLINGTHEFACADEBLIND: {
+          return getFuncList() & SUPLA_CHANNELFNC_CONTROLLINGTHEFACADEBLIND;
+        }
+        case SUPLA_CHANNELFNC_TERRACE_AWNING: {
+          return getFuncList() & SUPLA_CHANNELFNC_TERRACE_AWNING;
+        }
+        case SUPLA_CHANNELFNC_PROJECTOR_SCREEN: {
+          return getFuncList() & SUPLA_CHANNELFNC_PROJECTOR_SCREEN;
+        }
+        case SUPLA_CHANNELFNC_CURTAIN: {
+          return getFuncList() & SUPLA_CHANNELFNC_CURTAIN;
+        }
+        case SUPLA_CHANNELFNC_VERTICAL_BLIND: {
+          return getFuncList() & SUPLA_CHANNELFNC_VERTICAL_BLIND;
+        }
+        case SUPLA_CHANNELFNC_ROLLER_GARAGE_DOOR: {
+          return getFuncList() & SUPLA_CHANNELFNC_ROLLER_GARAGE_DOOR;
+        }
+        case SUPLA_CHANNELFNC_PUMPSWITCH: {
+          return getFuncList() & SUPLA_CHANNELFNC_PUMPSWITCH;
+        }
         case SUPLA_CHANNELFNC_HEATORCOLDSOURCESWITCH: {
-          return true;
+          return getFuncList() & SUPLA_CHANNELFNC_HEATORCOLDSOURCESWITCH;
         }
         default: {
           return false;

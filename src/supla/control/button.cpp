@@ -57,12 +57,15 @@ void Button::onTimer() {
   uint32_t timeDelta = millis() - lastStateChangeMs;
   bool stateChanged = false;
   int stateResult = state.update();
+  if (!state.isReady()) {
+    return;
+  }
   if (stateResult == TO_PRESSED) {
     SUPLA_LOG_VERBOSE("Button[%d] pressed", getButtonNumber());
     stateChanged = true;
     runAction(ON_PRESS);
     runAction(ON_CHANGE);
-    if (clickCounter == 0 && holdSend == 0) {
+    if (clickCounter <= 1 && holdSend == 0) {
       runAction(CONDITIONAL_ON_PRESS);
       runAction(CONDITIONAL_ON_CHANGE);
     }
@@ -74,6 +77,9 @@ void Button::onTimer() {
     if (clickCounter <= 1 && holdSend == 0) {
       runAction(CONDITIONAL_ON_RELEASE);
       runAction(CONDITIONAL_ON_CHANGE);
+    }
+    if (clickCounter <= 1 && holdSend > 0) {
+      runAction(ON_HOLD_RELEASE);
     }
   }
 
@@ -110,7 +116,7 @@ void Button::onTimer() {
           ++holdSend;
         }
         if (clickCounter >= 1 && stateResult == PRESSED &&
-            timeDelta > multiclickTimeMs) {
+            timeDelta > (holdTimeMs ? holdTimeMs : 3 * multiclickTimeMs)) {
           clickCounter = 0;
         }
       } else if (stateResult == RELEASED || isBistable() || isMotionSensor() ||
@@ -359,7 +365,7 @@ bool Button::isCentral() const {
 }
 
 void Button::onLoadConfig(SuplaDeviceClass *sdc) {
-  if (sdc->getDeviceMode() == Supla::DEVICE_MODE_TEST) {
+  if (sdc && sdc->getDeviceMode() == Supla::DEVICE_MODE_TEST) {
     SUPLA_LOG_DEBUG("Button[%d] test mode", getButtonNumber());
     setButtonType(ButtonType::MONOSTABLE);
     return;
