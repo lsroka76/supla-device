@@ -16,24 +16,26 @@
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  */
 
+#ifndef ARDUINO_ARCH_AVR
 #include "hide_show_container.h"
 
+#include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <supla/network/web_sender.h>
-#include <stdio.h>
-#include <stdint.h>
+#include <inttypes.h>
 
 namespace Supla {
 
 namespace Html {
 
-HideShowContainerBegin::HideShowContainerBegin(const char *displayName) :
-  HtmlElement(HTML_SECTION_FORM) {
-    int size = strlen(displayName);
-    name = new char[size + 1];
-    if (name) {
-      snprintf(name, size + 1, "%s", displayName);
-    }
+HideShowContainerBegin::HideShowContainerBegin(const char* displayName)
+    : HtmlElement(HTML_SECTION_FORM) {
+  int size = strlen(displayName);
+  name = new char[size + 1];
+  if (name) {
+    snprintf(name, size + 1, "%s", displayName);
+  }
 }
 
 HideShowContainerBegin::~HideShowContainerBegin() {
@@ -45,30 +47,35 @@ HideShowContainerBegin::~HideShowContainerBegin() {
 
 void HideShowContainerBegin::send(Supla::WebSender* sender) {
   char idStr[50] = {};
-  snprintf(idStr, sizeof(idStr), "%u", reinterpret_cast<uintptr_t>(this));
+  snprintf(idStr,
+           sizeof(idStr),
+           "%" PRIuPTR,
+           reinterpret_cast<uintptr_t>(this));
 
-  sender->send("<div id=\"");
-  sender->send(idStr);
-  sender->send("_link\">");
-  sender->send(
-      "<button onclick='document.getElementById(\"");
-  sender->send(idStr);
-  sender->send(
-      "\").style.display=\"block\";"
-      "document.getElementById(\"");
-  sender->send(idStr);
-  sender->send(
-      "_link\").style.display=\"none\";"
-      "return false;'>"
-      "Show ");
-  sender->send(name);
-  sender->send(
-      "</button>"
-      "</div>"
-      "<div id=\"");
-  sender->send(idStr);
-  sender->send(
-      "\" style=\"display:none\">");
+  char linkId[60] = {};
+  snprintf(linkId, sizeof(linkId), "%s_link", idStr);
+
+  char onclick[240] = {};
+  snprintf(onclick,
+           sizeof(onclick),
+           "document.getElementById(\"%s\").style.display=\"block\";"
+           "document.getElementById(\"%s\").style.display=\"none\";"
+           "return false;",
+           idStr,
+           linkId);
+
+  auto link = sender->tag("div");
+  link.attr("id", linkId);
+  link.body([&]() {
+    auto button = sender->tag("button");
+    button.attr("onclick", onclick);
+    button.body([&]() {
+      sender->send("Show ");
+      sender->sendSafe(name ? name : "");
+    });
+  });
+
+  sender->tag("div").attr("id", idStr).attr("style", "display:none").body("");
 }
 
 void HideShowContainerEnd::send(Supla::WebSender* sender) {
@@ -78,3 +85,4 @@ void HideShowContainerEnd::send(Supla::WebSender* sender) {
 };  // namespace Html
 };  // namespace Supla
 
+#endif  // ARDUINO_ARCH_AVR

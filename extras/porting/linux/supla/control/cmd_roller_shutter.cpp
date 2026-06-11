@@ -22,6 +22,7 @@
 #include <supla/time.h>
 
 #include <cstdio>
+#include <string>
 
 Supla::Control::CmdRollerShutter::CmdRollerShutter(
     Supla::Parser::Parser *parser)
@@ -81,7 +82,12 @@ void Supla::Control::CmdRollerShutter::iterateAlways() {
   Supla::Control::RollerShutter::iterateAlways();
 
   if (parser && (millis() - lastReadTime > 100)) {
-    refreshParserSource();
+    if (!parser->isSourceConnected()) {
+      lastReadTime = millis();
+      channel.setStateOffline();
+      return;
+    }
+    refreshParserSource(false);
     lastReadTime = millis();
     if (isOffline()) {
       channel.setStateOffline();
@@ -93,7 +99,7 @@ void Supla::Control::CmdRollerShutter::iterateAlways() {
 
 bool Supla::Control::CmdRollerShutter::isOffline() {
   if (useOfflineOnInvalidState && parser) {
-    if (getStateValue() == -1) {
+    if (getStateValue(false) == -1) {
       return true;
     }
   }
@@ -105,5 +111,3 @@ void Supla::Control::CmdRollerShutter::setUseOfflineOnInvalidState(
   this->useOfflineOnInvalidState = useOfflineOnInvalidState;
   SUPLA_LOG_INFO("useOfflineOnInvalidState = %d", useOfflineOnInvalidState);
 }
-
-

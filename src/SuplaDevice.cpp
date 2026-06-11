@@ -18,18 +18,29 @@
 
 #include <stdio.h>
 #include <string.h>
-#include <supla/log_wrapper.h>
-#include <supla/protocol/protocol_layer.h>
-#include <supla/protocol/supla_srpc.h>
 #include <supla/actions.h>
+#include <supla/auto_lock.h>
 #include <supla/channel.h>
+#include <supla/clock/clock.h>
+#include <supla/device/auto_update_policy.h>
+#include <supla/device/device_mode.h>
+#include <supla/device/factory_test.h>
 #include <supla/device/last_state_logger.h>
+#include <supla/device/register_device.h>
+#include <supla/device/remote_device_config.h>
+#include <supla/device/security_logger.h>
+#include <supla/device/status_led.h>
+#include <supla/device/subdevice_pairing_handler.h>
 #include <supla/device/sw_update.h>
 #include <supla/element.h>
 #include <supla/events.h>
 #include <supla/io.h>
+#include <supla/log_wrapper.h>
+#include <supla/mutex.h>
 #include <supla/network/network.h>
 #include <supla/network/web_server.h>
+#include <supla/protocol/protocol_layer.h>
+#include <supla/protocol/supla_srpc.h>
 #include <supla/storage/config.h>
 #include <supla/storage/config_tags.h>
 #include <supla/storage/storage.h>
@@ -37,17 +48,6 @@
 #include <supla/timer.h>
 #include <supla/tools.h>
 #include <supla/version.h>
-#include <supla/device/register_device.h>
-#include <supla/mutex.h>
-#include <supla/auto_lock.h>
-#include <supla/device/subdevice_pairing_handler.h>
-#include <supla/device/status_led.h>
-#include <supla/clock/clock.h>
-#include <supla/device/remote_device_config.h>
-#include <supla/device/auto_update_policy.h>
-#include <supla/device/device_mode.h>
-#include <supla/device/security_logger.h>
-#include <supla/device/factory_test.h>
 
 #ifndef ARDUINO
 #ifndef F
@@ -155,8 +155,9 @@ bool SuplaDeviceClass::begin(unsigned char protoVersion) {
   }
   initializationDone = true;
 
+  SUPLA_LOG_INFO("");
   SUPLA_LOG_INFO(" *** Supla - starting initialization (platform %d)",
-                  Supla::getPlatformId());
+                 Supla::getPlatformId());
 
   if (getClock() == nullptr) {
     SUPLA_LOG_DEBUG("Clock not configured, using default clock");
@@ -184,6 +185,7 @@ bool SuplaDeviceClass::begin(unsigned char protoVersion) {
   storageInitResult = Supla::Storage::Init();
 
   if (Supla::Storage::IsConfigStorageAvailable()) {
+    SUPLA_LOG_INFO("");
     SUPLA_LOG_INFO(" *** Supla - Config initalization");
 
     if (!lastStateLogger) {
@@ -227,6 +229,7 @@ bool SuplaDeviceClass::begin(unsigned char protoVersion) {
       }
     }
 
+    SUPLA_LOG_INFO("");
     SUPLA_LOG_INFO(" *** Supla - Config load for elements");
     // Load elements configuration
     for (auto element = Supla::Element::begin(); element != nullptr;
@@ -238,6 +241,7 @@ bool SuplaDeviceClass::begin(unsigned char protoVersion) {
   }
 
   if (Supla::Storage::Instance()) {
+    SUPLA_LOG_INFO("");
     SUPLA_LOG_INFO(" *** Supla - Load state storage");
     // Pefrorm dry run of write state to validate stored state section with
     // current device configuration
@@ -247,14 +251,33 @@ bool SuplaDeviceClass::begin(unsigned char protoVersion) {
     SUPLA_LOG_INFO(" *** Supla - Load state storage done");
   }
 
+  SUPLA_LOG_INFO("");
   SUPLA_LOG_INFO(" *** Supla - Init elements");
   // Initialize elements
+  bool isStateStorageMigrationNeeded = false;
   for (auto element = Supla::Element::begin(); element != nullptr;
        element = element->next()) {
     element->onInit();
+    if (element->isStateStorageMigrationNeeded()) {
+      isStateStorageMigrationNeeded = true;
+    }
     delay(0);
   }
   SUPLA_LOG_INFO(" *** Supla - Init elements done");
+  SUPLA_LOG_INFO("");
+
+  if (Supla::Storage::Instance() && isStateStorageMigrationNeeded) {
+    SUPLA_LOG_INFO(" *** Supla - State storage migration");
+    if (Supla::Storage::IsConfigStorageAvailable()) {
+      Supla::Storage::ConfigInstance()->commit();
+    }
+    SUPLA_LOG_DEBUG("Clearing state storage...");
+    Supla::Storage::Instance()->deleteAll();
+    Supla::Storage::Init();
+    Supla::Storage::WriteStateStorage();
+    SUPLA_LOG_INFO(" *** Supla - State storage migration done");
+    SUPLA_LOG_INFO("");
+  }
 
   // Enable timers
   Supla::initTimers();
@@ -274,8 +297,7 @@ bool SuplaDeviceClass::begin(unsigned char protoVersion) {
     webServer->setSuplaDeviceClass(this);
     if (webServer->verifyCertificatesFormat()) {
       // web password is used only when https is used
-      SUPLA_LOG_DEBUG(
-          "SD: add flag CALCFG_SET_CFG_MODE_PASSWORD_SUPPORTED");
+      SUPLA_LOG_DEBUG("SD: add flag CALCFG_SET_CFG_MODE_PASSWORD_SUPPORTED");
       addFlags(SUPLA_DEVICE_FLAG_CALCFG_SET_CFG_MODE_PASSWORD_SUPPORTED);
     }
   }
@@ -332,7 +354,7 @@ bool SuplaDeviceClass::begin(unsigned char protoVersion) {
   }
   SUPLA_LOG_INFO("Device name: %s", Supla::RegisterDevice::getName());
   SUPLA_LOG_INFO("Device software version: %s",
-      Supla::RegisterDevice::getSoftVer());
+                 Supla::RegisterDevice::getSoftVer());
 
   SUPLA_LOG_INFO(" *** Supla - Initializing network layer");
   char hostname[32] = {};
@@ -350,6 +372,7 @@ bool SuplaDeviceClass::begin(unsigned char protoVersion) {
   setupDeviceMode();
 
   SUPLA_LOG_INFO(" *** Supla - Initialization done");
+  SUPLA_LOG_INFO("");
   if (deviceMode != Supla::DEVICE_MODE_TEST) {
     SUPLA_LOG_INFO(" *** Self-test ***");
     auto tester = new Supla::Device::FactoryTest(this, 0);
@@ -543,11 +566,10 @@ void SuplaDeviceClass::iterate(void) {
         // check SW update availability
         if (swUpdate == nullptr && isAutomaticFirmwareUpdateEnabled()) {
           if (millis() - lastSwUpdateCheckTimestamp >
-              SUPLA_AUTOMATIC_OTA_CHECK_INTERVAL) {
-            initSwUpdateInstance(false, -1);
-            lastSwUpdateCheckTimestamp = millis();
-            if (swUpdate) {
-              triggerSwUpdateIfAvailable = true;
+              Supla::AutomaticOtaCheckInterval) {
+            if (initSwUpdateInstance(
+                    Supla::SwUpdateMode::PeriodicCheckAndUpdate, -1)) {
+              lastSwUpdateCheckTimestamp = millis();
             }
           }
         }
@@ -555,7 +577,7 @@ void SuplaDeviceClass::iterate(void) {
       }
 
       if (deviceMode == Supla::DEVICE_MODE_TEST) {
-      // Test mode
+        // Test mode
       }
       break;
     }
@@ -568,7 +590,8 @@ void SuplaDeviceClass::iterate(void) {
     // SW update mode
     case Supla::DEVICE_MODE_SW_UPDATE: {
       if (swUpdate == nullptr) {
-        initSwUpdateInstance(true, 0);
+        SUPLA_LOG_INFO("DEVICE_MODE_SW_UPDATE Starting SW update");
+        initSwUpdateInstance(Supla::SwUpdateMode::CheckAndUpdate, 0);
       }
       iterateSwUpdate();
       if (swUpdate == nullptr) {
@@ -584,7 +607,7 @@ void SuplaDeviceClass::iterate(void) {
   }
 }
 
-bool SuplaDeviceClass::initSwUpdateInstance(bool performUpdate,
+bool SuplaDeviceClass::initSwUpdateInstance(Supla::SwUpdateMode mode,
                                             int securityOnly) {
   if (swUpdate) {
     // already initialized earlier
@@ -592,6 +615,21 @@ bool SuplaDeviceClass::initSwUpdateInstance(bool performUpdate,
   }
   if (!isAutomaticFirmwareUpdateEnabled() && securityOnly != 0) {
     return false;
+  }
+
+  if (mode == Supla::SwUpdateMode::CheckAndUpdate ||
+      mode == Supla::SwUpdateMode::PeriodicCheckAndUpdate) {
+    swUpdateAttempts = 0;
+  }
+
+  if (mode == Supla::SwUpdateMode::RetryCheckAndUpdate) {
+    swUpdateAttempts++;
+    if (swUpdateAttempts > 3) {
+      SUPLA_LOG_WARNING("Firmware update retry limit exceeded");
+      return false;
+    }
+    SUPLA_LOG_INFO("Firmware update retry %d", swUpdateAttempts);
+    mode = Supla::SwUpdateMode::CheckAndUpdate;
   }
 
   lastSwUpdateCheckTimestamp = millis();
@@ -627,9 +665,9 @@ bool SuplaDeviceClass::initSwUpdateInstance(bool performUpdate,
 
   if (strlen(url) == 0) {
     swUpdate = Supla::Device::SwUpdate::Create(
-        this, "https://iot.updates.supla.org/check-updates");
+        this, "https://iot.updates.supla.org/check-updates", mode);
   } else {
-    swUpdate = Supla::Device::SwUpdate::Create(this, url);
+    swUpdate = Supla::Device::SwUpdate::Create(this, url, mode);
   }
   if (swUpdate == nullptr) {
     SUPLA_LOG_WARNING("Failed to create SW update instance");
@@ -647,13 +685,10 @@ bool SuplaDeviceClass::initSwUpdateInstance(bool performUpdate,
   if (securityOnly == 1) {
     swUpdate->setSecurityOnly();
   }
-  if (!performUpdate) {
-    SUPLA_LOG_INFO("Checking SW update");
-    swUpdate->setCheckUpdateAndAbort();
-  } else {
+  if (mode == Supla::SwUpdateMode::CheckAndUpdate) {
     deviceMode = Supla::DEVICE_MODE_SW_UPDATE;
   }
-  return swUpdate != nullptr;
+  return true;
 }
 
 void SuplaDeviceClass::iterateSwUpdate() {
@@ -662,7 +697,7 @@ void SuplaDeviceClass::iterateSwUpdate() {
   }
 
   if (!swUpdate->isStarted()) {
-    if (!swUpdate->isCheckUpdateAndAbort()) {
+    if (deviceMode == Supla::DEVICE_MODE_SW_UPDATE) {
       SUPLA_LOG_INFO("Starting SW update");
       status(STATUS_SW_DOWNLOAD, F("SW update in progress..."));
       Supla::Network::DisconnectProtocols();
@@ -672,7 +707,11 @@ void SuplaDeviceClass::iterateSwUpdate() {
     swUpdate->iterate();
     if (swUpdate->isAborted()) {
       SUPLA_LOG_INFO("SW update aborted");
-      int securityOnly = swUpdate->isSecurityOnly() ? 1 : 0;
+
+      bool retryAllowed = swUpdate->isRetryAllowed();
+      int securityPolicy = swUpdate->isSecurityOnly() ? 1 : 0;
+
+      //      int swUpdatePolicy = swUpdate->isSecurityOnly() ? 1 : 0;
       TCalCfg_FirmwareCheckResult result = {};
       result.Result = SUPLA_FIRMWARE_CHECK_RESULT_ERROR;
       if (swUpdate->getNewVersion()) {
@@ -682,24 +721,29 @@ void SuplaDeviceClass::iterateSwUpdate() {
                 SUPLA_SOFTVER_MAXSIZE - 1);
         result.Result = SUPLA_FIRMWARE_CHECK_RESULT_UPDATE_AVAILABLE;
         if (swUpdate->getChangelogUrl()) {
-          strncpy(
-              result.ChangelogUrl, swUpdate->getChangelogUrl(),
-              SUPLA_URL_PATH_MAXSIZE - 1);
+          strncpy(result.ChangelogUrl,
+                  swUpdate->getChangelogUrl(),
+                  SUPLA_URL_PATH_MAXSIZE - 1);
         }
-      } else {
+      } else if (!swUpdate->isRetryAllowed()) {
         result.Result = SUPLA_FIRMWARE_CHECK_RESULT_UPDATE_NOT_AVAILABLE;
-        triggerSwUpdateIfAvailable = false;
+        //        triggerSwUpdateIfAvailableAttempts = 0;
       }
-      srpcLayer->sendPendingCalCfgResult(-1, SUPLA_CALCFG_RESULT_TRUE, -1,
-          sizeof(result), &result);
+      srpcLayer->sendPendingCalCfgResult(
+          -1, SUPLA_CALCFG_RESULT_TRUE, -1, sizeof(result), &result);
       srpcLayer->clearPendingCalCfgResult(
           -1, SUPLA_CALCFG_CMD_CHECK_FIRMWARE_UPDATE);
       delete swUpdate;
       swUpdate = nullptr;
-      if (triggerSwUpdateIfAvailable) {
-        initSwUpdateInstance(true, securityOnly);
+      if (retryAllowed) {
+        initSwUpdateInstance(Supla::SwUpdateMode::RetryCheckAndUpdate,
+                             securityPolicy);
       }
-
+      //      if (triggerSwUpdateIfAvailableAttempts > 0) {
+      //        SUPLA_LOG_INFO("Triggering SW update again (%d attempts left)",
+      //                       triggerSwUpdateIfAvailableAttempts);
+      //        initSwUpdateInstance(true, swUpdatePolicy);
+      //      }
     } else if (swUpdate->isFinished()) {
       SUPLA_LOG_INFO("Finished SW update, restarting...");
       delete swUpdate;
@@ -887,6 +931,18 @@ void SuplaDeviceClass::iterateAlwaysElements(uint32_t _millis) {
   // Iterate all elements and saves state
   if (Supla::Storage::SaveStateAllowed(_millis)) {
     saveStateToStorage();
+  }
+
+  // check the startup of the permanent web server
+  if (startPermanentWebInterface) {
+    if (!runningPermanentWebInterface) {
+      if (Supla::Network::IsReady()) {
+        if (Supla::WebServer::Instance() != nullptr) {
+          Supla::WebServer::Instance()->start();
+          runningPermanentWebInterface = true;
+        }
+      }
+    }
   }
 }
 
@@ -1130,7 +1186,7 @@ int SuplaDeviceClass::handleCalcfgFromServer(TSD_DeviceCalCfgRequest *request,
           }
         }
         // only check firmware for all updates
-        initSwUpdateInstance(false, 0);
+        initSwUpdateInstance(Supla::SwUpdateMode::OnlyCheck, 0);
         if (swUpdate) {
           SUPLA_LOG_INFO("Firmware update check started");
           return SUPLA_CALCFG_RESULT_TRUE;
@@ -1165,10 +1221,8 @@ int SuplaDeviceClass::handleCalcfgFromServer(TSD_DeviceCalCfgRequest *request,
             break;
           }
         }
-        // only check firmware for all updates
-        initSwUpdateInstance(false, 0);
-        triggerSwUpdateIfAvailable = true;
-        if (swUpdate) {
+
+        if (initSwUpdateInstance(Supla::SwUpdateMode::CheckAndUpdate, 0)) {
           SUPLA_LOG_INFO("Firmware update started");
           return SUPLA_CALCFG_RESULT_TRUE;
         }
@@ -1202,10 +1256,7 @@ int SuplaDeviceClass::handleCalcfgFromServer(TSD_DeviceCalCfgRequest *request,
             break;
           }
         }
-        // only check firmware for all updates
-        initSwUpdateInstance(false, 1);
-        triggerSwUpdateIfAvailable = true;
-        if (swUpdate) {
+        if (initSwUpdateInstance(Supla::SwUpdateMode::CheckAndUpdate, 1)) {
           SUPLA_LOG_INFO("Firmware update started");
           return SUPLA_CALCFG_RESULT_TRUE;
         }
@@ -1544,7 +1595,7 @@ void SuplaDeviceClass::checkIfLeaveCfgModeOrRestartIsNeeded() {
   // request (from Cloud).
   // After any interaction with www inteface, it switches to Done state.
   if ((cfgModeState == Supla::CfgModeState::CfgModeStartedPending &&
-        enterConfigModeTimestampCopy != 0 &&
+       enterConfigModeTimestampCopy != 0 &&
        _millis - enterConfigModeTimestampCopy > restartTimeoutValue)) {
     SUPLA_LOG_INFO("Config mode timeout. Leave without restart");
     leaveConfigModeWithoutRestart();
@@ -1597,6 +1648,10 @@ void SuplaDeviceClass::setRsaPublicKeyPtr(const uint8_t *ptr) {
 
 void SuplaDeviceClass::setAutomaticResetOnConnectionProblem(
     unsigned int timeSec) {
+  if (timeSec < 60) {
+    // disabled
+    timeSec = 0;
+  }
   resetOnConnectionFailTimeoutSec = timeSec;
 }
 
@@ -1615,7 +1670,7 @@ void SuplaDeviceClass::setSuplaCACert(const char *cert) {
   srpcLayer->setSuplaCACert(cert);
 }
 
-const char* SuplaDeviceClass::getSuplaCACert() const {
+const char *SuplaDeviceClass::getSuplaCACert() const {
   if (srpcLayer) {
     return srpcLayer->getSuplaCACert();
   }
@@ -1751,6 +1806,15 @@ void SuplaDeviceClass::setProtoVerboseLog(bool value) {
   }
 }
 
+void SuplaDeviceClass::setPermanentWebInterface(bool value) {
+  startPermanentWebInterface = value;
+
+  if (!value && runningPermanentWebInterface) {
+    Supla::WebServer::Instance()->stop();
+    runningPermanentWebInterface = false;
+  }
+}
+
 Supla::Mutex *SuplaDeviceClass::getTimerAccessMutex() {
   return timerAccessMutex;
 }
@@ -1762,7 +1826,7 @@ void SuplaDeviceClass::setChannelConflictResolver(
 }
 
 void SuplaDeviceClass::setSubdevicePairingHandler(
-      Supla::Device::SubdevicePairingHandler *handler) {
+    Supla::Device::SubdevicePairingHandler *handler) {
   subdevicePairingHandler = handler;
 }
 
@@ -1784,7 +1848,8 @@ void SuplaDeviceClass::setStatusLed(Supla::Device::StatusLed *led) {
 
 void SuplaDeviceClass::setLeaveCfgModeAfterInactivityMin(int valueMin) {
   SUPLA_LOG_INFO("SD: leave cfg mode after inactivity: %d min%s",
-                 valueMin, valueMin == 0 ? " (disabled)" : "");
+                 valueMin,
+                 valueMin == 0 ? " (disabled)" : "");
   leaveCfgModeAfterInactivityMin = valueMin;
 }
 

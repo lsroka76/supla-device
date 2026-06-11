@@ -87,6 +87,8 @@
 #include <cstdlib>
 #include <iostream>
 #include <cxxopts.hpp>
+#include <string>
+#include <memory>
 
 
 // reguired by linux_log.c
@@ -158,6 +160,14 @@ int main(int argc, char* argv[]) {
 
     if (result.count("verbose") || config->isVerbose()) {
       logLevel = LOG_VERBOSE;
+    }
+
+    if (result.count("warning") || config->isWarning()) {
+      logLevel = LOG_WARNING;
+    }
+
+    if (result.count("error") || config->isError()) {
+      logLevel = LOG_ERR;
     }
 
     SUPLA_LOG_INFO(" *** Starting supla-device ***");

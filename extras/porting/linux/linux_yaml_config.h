@@ -32,7 +32,7 @@
  * Please pay attantion to spaces, as those are important in yaml files.
 
 name: Device name
-# log_level - optional, values: info (default), debug, verbose
+# log_level - optional, values: info (default), debug, verbose, warning, error
 log_level: debug
 
 supla:
@@ -84,6 +84,8 @@ class LinuxYamlConfig : public KeyValue {
 
   bool isDebug();
   bool isVerbose();
+  bool isWarning();
+  bool isError();
 
   bool loadChannels();
 
@@ -150,6 +152,9 @@ class LinuxYamlConfig : public KeyValue {
   bool addCmdRollerShutter(const YAML::Node& ch,
                            int channelNumber,
                            Supla::Parser::Parser*);
+  bool addRgbCctParsed(const YAML::Node& ch,
+                       int channelNumber,
+                       Supla::Parser::Parser*);
   bool addCustomRelay(const YAML::Node& ch,
                       int channelNumber,
                       Parser::Parser* parser,
@@ -164,8 +169,7 @@ class LinuxYamlConfig : public KeyValue {
                      int channelNumber,
                      Payload::Payload* payload);
   bool addCommonParameters(const YAML::Node& ch,
-                           Supla::Element* element,
-                           int* paramCount);
+                           Supla::Element* element);
   bool addThermometerParsed(const YAML::Node& ch,
                             int channelNumber,
                             Supla::Parser::Parser* parser);
@@ -207,7 +211,6 @@ class LinuxYamlConfig : public KeyValue {
                          Supla::Parser::Parser* parser);
   bool addCommonParametersParsed(const YAML::Node& ch,
                                  Supla::Sensor::SensorParsedBase* sensor,
-                                 int* paramCount,
                                  Supla::Parser::Parser* parser);
   void loadGuidAuthFromPath(const std::string& path);
   bool saveGuidAuth(const std::string& path);
@@ -248,7 +251,7 @@ class LinuxYamlConfig : public KeyValue {
   std::map<int, Supla::Payload::Payload*> payloads;
   std::map<int, Supla::Output::Output*> outputs;
 
-  int paramCount = 0;
+  std::size_t paramCount = 0;
   int parserCount = 0;
   int sourceCount = 0;
   int payloadCount = 0;

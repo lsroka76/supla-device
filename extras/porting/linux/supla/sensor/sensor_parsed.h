@@ -51,13 +51,13 @@ class SensorParsedBase {
 
   void setMultiplier(const std::string &parameter, double multiplier);
 
-  bool refreshParserSource();
+  bool refreshParserSource(bool updateChannelState = true);
 
   bool isParameterConfigured(const std::string &parameter);
 
   // Returns -1 on invalid source/parser/value,
   // Otherwise returns >= 0 read from parser.
-  int getStateValue();
+  int getStateValue(bool updateChannelState = true);
   void setOnValues(
       const std::vector<std::variant<int, bool, std::string>> &onValues);
   bool addAtOnState(const std::vector<int> &onState);
@@ -120,7 +120,7 @@ class SensorParsed : public T, public SensorParsedBase {
 
 template <typename T>
 SensorParsed<T>::SensorParsed(Supla::Parser::Parser *parser)
-    : SensorParsedBase(parser) {
+    : SensorParsedBase(parser) {  // NOLINT
 }
 
 

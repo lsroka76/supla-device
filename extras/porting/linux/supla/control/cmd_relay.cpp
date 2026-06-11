@@ -22,6 +22,7 @@
 #include <supla/time.h>
 
 #include <cstdio>
+#include <string>
 
 Supla::Control::CmdRelay::CmdRelay(Supla::Parser::Parser *parser,
                                    _supla_int_t functions)
@@ -38,7 +39,6 @@ void Supla::Control::CmdRelay::onInit() {
 
 void Supla::Control::CmdRelay::turnOn(_supla_int_t duration) {
   Supla::Control::VirtualRelay::turnOn(duration);
-  channel.setNewValue(isOn());
 
   if (cmdOn.length() > 0) {
     auto p = popen(cmdOn.c_str(), "r");
@@ -48,7 +48,6 @@ void Supla::Control::CmdRelay::turnOn(_supla_int_t duration) {
 
 void Supla::Control::CmdRelay::turnOff(_supla_int_t duration) {
   Supla::Control::VirtualRelay::turnOff(duration);
-  channel.setNewValue(isOn());
 
   if (cmdOff.length() > 0) {
     auto p = popen(cmdOff.c_str(), "r");
@@ -69,7 +68,7 @@ bool Supla::Control::CmdRelay::isOn() {
 
   int result = 0;
   if (parser) {
-    result = getStateValue();
+    result = getStateValue(false);
     if (result == 1) {
       newState = true;
     } else if (result != -1) {
@@ -88,9 +87,14 @@ void Supla::Control::CmdRelay::iterateAlways() {
   Supla::Control::VirtualRelay::iterateAlways();
 
   if (parser && (millis() - lastReadTime > 100)) {
-    refreshParserSource();
+    if (!parser->isSourceConnected()) {
+      lastReadTime = millis();
+      channel.setStateOffline();
+      return;
+    }
+    refreshParserSource(false);
     lastReadTime = millis();
-    channel.setNewValue(isOn());
+    setNewChannelValue(true);
     if (isOffline()) {
       channel.setStateOffline();
     } else {
@@ -101,7 +105,7 @@ void Supla::Control::CmdRelay::iterateAlways() {
 
 bool Supla::Control::CmdRelay::isOffline() {
   if (useOfflineOnInvalidState && parser) {
-    if (getStateValue() == -1) {
+    if (getStateValue(false) == -1) {
       return true;
     }
   }
@@ -114,4 +118,3 @@ void Supla::Control::CmdRelay::setUseOfflineOnInvalidState(
   this->useOfflineOnInvalidState = useOfflineOnInvalidState;
   SUPLA_LOG_INFO("useOfflineOnInvalidState = %d", useOfflineOnInvalidState);
 }
-
