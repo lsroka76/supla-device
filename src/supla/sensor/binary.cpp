@@ -60,5 +60,5 @@ bool Supla::Sensor::Binary::getValue() {
 
 void Supla::Sensor::Binary::onInit() {
   inputPin.pinMode(channel.getChannelNumber());
-  channel.setNewValue(getValue());
+  setInitialChannelValue(getValue());
 }

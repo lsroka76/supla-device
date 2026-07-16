@@ -35,7 +35,7 @@ bool VirtualBinary::getValue() {
 }
 
 void VirtualBinary::onInit() {
-  channel.setNewValue(getValue());
+   setInitialChannelValue(getValue());
 }
 
 void VirtualBinary::onSaveState() {

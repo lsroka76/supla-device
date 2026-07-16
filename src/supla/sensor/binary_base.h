@@ -164,6 +164,7 @@ class BinaryBase : public ElementWithChannelActions {
                          uint8_t configType) override;
 
  protected:
+  void setInitialChannelValue(bool value);
   void saveConfig();
   void printConfig();
   uint32_t lastReadTime = 0;

@@ -39,6 +39,12 @@ BinaryBase::BinaryBase() {
 BinaryBase::~BinaryBase() {
 }
 
+void BinaryBase::setInitialChannelValue(bool value) {
+  char channelValue[SUPLA_CHANNELVALUE_SIZE] = {};
+  channelValue[0] = value;
+  channel.setNewValue(channelValue);
+}
+
 void BinaryBase::onLoadConfig(SuplaDeviceClass *sdc) {
   (void)(sdc);
   auto cfg = Supla::Storage::ConfigInstance();
