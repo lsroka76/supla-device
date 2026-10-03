@@ -193,7 +193,7 @@ class DS18B20 : public Thermometer {
   double lastValidValue;
 };
 
-OneWireBus *DS18B20::oneWireBus = nullptr;
+inline OneWireBus *DS18B20::oneWireBus = nullptr;
 
 };  // namespace Sensor
 };  // namespace Supla
