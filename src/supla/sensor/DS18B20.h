@@ -106,6 +106,7 @@ class DS18B20 : public Thermometer {
     while (bus) {
       if (bus->pin == pin) {
         myBus = bus;
+        myBus->scanBus();
         break;
       }
       prevBus = bus;
