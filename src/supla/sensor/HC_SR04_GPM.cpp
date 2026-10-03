@@ -50,6 +50,7 @@ void HC_SR04_GPM::onInit() {
 
 double HC_SR04_GPM::getValue() {
 //  noInterrupts();
+	//log_i("_trigPin %u, ech Pin %u, minIn %u, minOut %u, maxIn %u, maxOut%u", _trigPin,_echoPin,_minIn, _minOut,_maxIn, _maxOut);
   Supla::Io::digitalWrite(_trigPin, HIGH);
   // increased delay from 10 to 30 to make it work also for JSN-SR20-Y1 sensor
   delayMicroseconds(30);
