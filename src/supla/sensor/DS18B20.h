@@ -107,6 +107,13 @@ class OneWireBus {
 class DS18B20 : public Thermometer {
  public:
   explicit DS18B20(uint8_t pin, uint8_t *deviceAddress = nullptr) {
+
+    initDS18B20(pin, deviceAddress);
+  }
+
+
+  void initDS18B20(uint8_t pin, uint8_t *deviceAddress = nullptr) {
+
     OneWireBus *bus = oneWireBus;
     OneWireBus *prevBus = nullptr;
     address[0] = 0;
