@@ -1,20 +1,5 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
-
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
-
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #ifndef ARDUINO_ARCH_AVR
 
@@ -24,6 +9,8 @@
 #include <supla/log_wrapper.h>
 #include <supla/network/html_element.h>
 #include <supla/network/html_generator.h>
+#include <supla/network/network.h>
+#include <supla/network/web_host.h>
 #include <supla/time.h>
 #include <supla/tools.h>
 #include <supla/storage/storage.h>
@@ -31,22 +18,68 @@
 
 #include "esp_web_server.h"
 
+#if defined(ESP8266)
+#include <ESP8266WiFi.h>
+#else
+#include <WiFi.h>
+#endif
+
 static Supla::EspWebServer *serverInstance = nullptr;
-static int reboot = 0;
+
+static bool validateHost(::ESPWebServer *server) {
+  Supla::WebHost host;
+  IPAddress address;
+  if (!host.parse(server->hostHeader().c_str()) ||
+      ((host.ipv4 || host.ipv6) && !address.fromString(host.name))) {
+    server->send(400, "text/plain", "Invalid Host");
+    return false;
+  }
+  bool allowed = false;
+  if (!host.hasPort || host.port == 80) {
+    if (host.ipv4 || host.ipv6) {
+      allowed = address != IPAddress() &&
+                (address == server->client().localIP() ||
+                 address == WiFi.softAPIP());
+    }
+    for (auto *network = Supla::Network::FirstInstance(); network != nullptr;
+         network = Supla::Network::NextInstance(network)) {
+      if (host.matchesName(network->getHostname()) ||
+          (host.ipv4 && network->getIP() != 0 &&
+           address == IPAddress(network->getIP()))) {
+        allowed = true;
+      }
+    }
+  }
+  if (!allowed) {
+    server->send(403, "text/plain", "Host not allowed");
+  }
+  return allowed;
+}
 
 void getFavicon() {
+  if (serverInstance && !validateHost(serverInstance->getServerPtr())) {
+    return;
+  }
   SUPLA_LOG_DEBUG("SERVER: get favicon.ico");
   if (serverInstance) {
     serverInstance->notifyClientConnected();
     auto svr = serverInstance->getServerPtr();
     svr->setContentLength(CONTENT_LENGTH_UNKNOWN);
     svr->send(200, "image/x-icon", "");
-    serverInstance->getServerPtr()->sendContent((const char *)(Supla::favico),
-                                                sizeof(Supla::favico));
+#if defined(ARDUINO_ARCH_ESP8266)
+    serverInstance->getServerPtr()->sendContent_P(
+        reinterpret_cast<PGM_P>(Supla::favico), sizeof(Supla::favico));
+#else
+    serverInstance->getServerPtr()->sendContent(
+        reinterpret_cast<const char *>(Supla::favico), sizeof(Supla::favico));
+#endif
   }
 }
 
 void getHandler() {
+  if (serverInstance && !validateHost(serverInstance->getServerPtr())) {
+    return;
+  }
   SUPLA_LOG_DEBUG("SERVER: get request");
 
   if (serverInstance && serverInstance->htmlGenerator) {
@@ -58,6 +91,9 @@ void getHandler() {
 }
 
 void getBetaHandler() {
+  if (serverInstance && !validateHost(serverInstance->getServerPtr())) {
+    return;
+  }
   SUPLA_LOG_DEBUG("SERVER: get beta request");
 
   if (serverInstance && serverInstance->htmlGenerator) {
@@ -70,37 +106,48 @@ void getBetaHandler() {
 }
 
 void postHandler() {
+  if (serverInstance && !validateHost(serverInstance->getServerPtr())) {
+    return;
+  }
   SUPLA_LOG_DEBUG("SERVER: post request");
   if (serverInstance) {
     if (serverInstance->handlePost()) {
-      // rbt/reboot == 1 is sent by mobile applications. After such a message
-      // they disconnect from device's Wi-Fi, however, ESP32 WebServer
-      // implementation will try to send each chunk of HTML from getHandler
-      // with a very long timeout. In order to prevent the app from hanging,
-      // we skip getHandler in such a case.
-      if (reboot != 1) {
-        // Sending redirect after POST to prevent another POST on page refresh
-        serverInstance->getServerPtr()->sendHeader("Location", "/", true);
-        serverInstance->getServerPtr()->send(
-            303, "text/plain", "Redirecting...");
-      }
+      // Keep the HTTP transaction complete even when a restart is scheduled.
+      // The restart is delayed by handlePost(), so the redirect can still be
+      // delivered before the device goes away.
+      serverInstance->getServerPtr()->sendHeader("Location", "/", true);
+      serverInstance->getServerPtr()->send(
+          303, "text/plain", "Redirecting...");
+    } else {
+      serverInstance->getServerPtr()->send(
+          400, "text/plain", "Invalid POST request");
     }
   }
 }
 
 void postBetaHandler() {
+  if (serverInstance && !validateHost(serverInstance->getServerPtr())) {
+    return;
+  }
   SUPLA_LOG_DEBUG("SERVER: beta post request");
   if (serverInstance) {
     if (serverInstance->handlePost(true)) {
       serverInstance->getServerPtr()->sendHeader("Location", "/beta", true);
       serverInstance->getServerPtr()->send(
           303, "text/plain", "Redirecting...");
+    } else {
+      serverInstance->getServerPtr()->send(
+          400, "text/plain", "Invalid POST request");
     }
   }
 }
 
 ::ESPWebServer *Supla::EspWebServer::getServerPtr() {
   return &server;
+}
+
+char *Supla::EspWebServer::getSendBufPtr() const {
+  return sendBuf;
 }
 
 Supla::EspWebServer::EspWebServer(Supla::HtmlGenerator *generator)
@@ -110,6 +157,10 @@ Supla::EspWebServer::EspWebServer(Supla::HtmlGenerator *generator)
 
 Supla::EspWebServer::~EspWebServer() {
   serverInstance = nullptr;
+  if (sendBuf) {
+    delete[] sendBuf;
+    sendBuf = nullptr;
+  }
 }
 
 bool Supla::EspWebServer::handlePost(bool beta) {
@@ -119,11 +170,24 @@ bool Supla::EspWebServer::handlePost(bool beta) {
     setBetaProcessing();
   }
 
-  for (int i = 0; i < server.args(); i++) {
+  if (server.args() <= 0 || strcmp(server.argName(0).c_str(), "csrf") != 0 ||
+      !isCsrfTokenValid(server.arg(0).c_str())) {
+    SUPLA_LOG_WARNING("SERVER: invalid CSRF token");
+    return false;
+  }
+
+  for (int i = 1; i < server.args(); i++) {
+    if (strcmp(server.argName(i).c_str(), "csrf") == 0) {
+      continue;
+    }
+    char redactedValue[Supla::REDACTED_LOG_VALUE_BUFFER_SIZE] = {};
     SUPLA_LOG_DEBUG(
               "SERVER: key %s, value %s",
               server.argName(i).c_str(),
-              server.arg(i).c_str());
+              Supla::redactLogValue(server.argName(i).c_str(),
+                                    server.arg(i).c_str(),
+                                    redactedValue,
+                                    sizeof(redactedValue)));
     for (auto htmlElement = Supla::HtmlElement::begin(); htmlElement;
          htmlElement = htmlElement->next()) {
       if (isSectionAllowed(htmlElement->section)) {
@@ -134,7 +198,7 @@ bool Supla::EspWebServer::handlePost(bool beta) {
       }
     }
     if (strcmp(server.argName(i).c_str(), "rbt") == 0) {
-      reboot = stringToUInt(server.arg(i).c_str());
+      int reboot = stringToUInt(server.arg(i).c_str());
       SUPLA_LOG_DEBUG("rbt found %d", reboot);
       if (reboot == 2) {
         sdc->scheduleSoftRestart(2500);
@@ -168,6 +232,12 @@ void Supla::EspWebServer::start() {
   }
 
   started = true;
+  if (!sendBuf) {
+    sendBuf = new char[SUPLA_HTML_OUTPUT_BUFFER_SIZE];
+    if (sendBuf) {
+      memset(sendBuf, 0, SUPLA_HTML_OUTPUT_BUFFER_SIZE);
+    }
+  }
 
   SUPLA_LOG_INFO("Starting local web server");
 
@@ -188,32 +258,40 @@ void Supla::EspWebServer::stop() {
   }
 }
 
-Supla::EspSender::EspSender(::ESPWebServer *req) : reqHandler(req) {
+Supla::EspSender::EspSender(::ESPWebServer *req)
+    : reqHandler(req),
+      outputBuffer(serverInstance ? serverInstance->getSendBufPtr() : nullptr,
+                   SUPLA_HTML_OUTPUT_BUFFER_SIZE) {
   reqHandler->setContentLength(CONTENT_LENGTH_UNKNOWN);
+  reqHandler->sendHeader("X-Frame-Options", "DENY");
+  reqHandler->sendHeader("Content-Security-Policy", "frame-ancestors 'none'");
   reqHandler->send(200, "text/html", "");
 }
 
 Supla::EspSender::~EspSender() {
+  if (reqHandler && !outputBuffer.error()) {
+    outputBuffer.flush(reqHandler, &EspSender::flushChunk);
+  }
+}
+
+bool Supla::EspSender::flushChunk(void *context, const char *buf, int size) {
+  if (context == nullptr || buf == nullptr || size < 0) {
+    return false;
+  }
+  auto *req = reinterpret_cast<::ESPWebServer *>(context);
+  if (!req->client().connected()) {
+    SUPLA_LOG_WARNING("WebSender error - lost connection");
+    return false;
+  }
+  req->sendContent(buf, size);
+  return true;
 }
 
 void Supla::EspSender::send(const char *buf, int size) {
-  if (error || !buf || !reqHandler) {
+  if (!buf || !reqHandler) {
     return;
   }
-  if (!reqHandler->client().connected()) {
-    SUPLA_LOG_WARNING("WebSender error - lost connection");
-    error = true;
-    return;
-  }
-
-  if (size == -1) {
-    size = strlen(buf);
-  }
-  if (size == 0) {
-    return;
-  }
-
-  reqHandler->sendContent(buf, size);
+  outputBuffer.send(reqHandler, &EspSender::flushChunk, buf, size);
 }
 
 void Supla::EspWebServer::iterateAlways() {

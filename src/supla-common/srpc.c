@@ -1,35 +1,28 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
-
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
-
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
- */
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "srpc.h"
 
 #include <stdlib.h>
 #include <string.h>
 
+#if !defined(__AVR__) && !defined(_WIN32)
+#include <sys/time.h>
+#endif
+
 #include "lck.h"
 #include "log.h"
 #include "proto.h"
 
-// ESP8266 and ESP32
-#if defined(ESP8266) || defined(ESP32)
+#if defined(SUPLA_DEVICE) || defined(ARDUINO) || defined(ESP8266) || \
+    defined(ESP32)
 #ifndef __EH_DISABLED
 #define __EH_DISABLED
-#endif /*__EH_DISABLED*/
+#endif  /* __EH_DISABLED */
+#endif
+
+// ESP8266 and ESP32
+#if defined(ESP8266) || defined(ESP32)
 #define SRPC_BUFFER_SIZE 256
 #define SRPC_QUEUE_SIZE 2
 #define SRPC_QUEUE_MIN_ALLOC_COUNT 2
@@ -59,8 +52,11 @@
 // OTHER SUPLA_DEVICE
 // Linux target, other?
 #elif defined(SUPLA_DEVICE)
+#if defined(ESP_PLATFORM)
+#define SRPC_BUFFER_SIZE 256
+#else
 #define SRPC_BUFFER_SIZE 1024
-#define __EH_DISABLED
+#endif
 
 // other not releated to supla-device
 #else
@@ -102,11 +98,19 @@ typedef struct {
 #endif /*SRPC_WITHOUT_OUT_QUEUE*/
 
   void *lck;
+  TsrpcIterateReason last_iterate_reason;
 } Tsrpc;
 
 void SRPC_ICACHE_FLASH srpc_get_scene_pack(Tsrpc *srpc, TsrpcReceivedData *rd);
 void SRPC_ICACHE_FLASH srpc_get_scene_state_pack(Tsrpc *srpc,
                                                  TsrpcReceivedData *rd);
+
+static TsrpcIterateReason SRPC_ICACHE_FLASH
+srpc_input_append_result_to_reason(char result) {
+  return result == (char)SUPLA_RESULT_BUFFER_OVERFLOW
+             ? SRPC_ITERATE_REASON_INPUT_BUFFER_OVERFLOW
+             : SRPC_ITERATE_REASON_INPUT_BUFFER_ERROR;
+}
 
 void SRPC_ICACHE_FLASH srpc_params_init(TsrpcParams *params) {
   memset(params, 0, sizeof(TsrpcParams));
@@ -306,6 +310,16 @@ char SRPC_ICACHE_FLASH srpc_output_dataexists(void *_srpc) {
   return lck_unlock_r(srpc->lck, result);
 }
 
+TsrpcIterateReason SRPC_ICACHE_FLASH srpc_get_last_iterate_reason(
+    void *_srpc) {
+  TsrpcIterateReason result;
+  Tsrpc *srpc = (Tsrpc *)_srpc;
+  lck_lock(srpc->lck);
+  result = srpc->last_iterate_reason;
+  lck_unlock(srpc->lck);
+  return result;
+}
+
 char SRPC_ICACHE_FLASH srpc_iterate(void *_srpc) {
   Tsrpc *srpc = (Tsrpc *)_srpc;
   char data_buffer[SRPC_BUFFER_SIZE];
@@ -317,10 +331,13 @@ char SRPC_ICACHE_FLASH srpc_iterate(void *_srpc) {
 
   // --------- IN ---------------
   lck_lock(srpc->lck);
+  srpc->last_iterate_reason = SRPC_ITERATE_REASON_NONE;
+
   _supla_int_t data_size = srpc->params.data_read(data_buffer, SRPC_BUFFER_SIZE,
                                                   srpc->params.user_params);
 
   if (data_size == 0) {
+    srpc->last_iterate_reason = SRPC_ITERATE_REASON_SOCKET_CLOSED;
     return lck_unlock_r(srpc->lck, SUPLA_RESULT_FALSE);
   }
 
@@ -329,6 +346,7 @@ char SRPC_ICACHE_FLASH srpc_iterate(void *_srpc) {
                                 srpc->proto, data_buffer, data_size))) {
     supla_log(LOG_DEBUG, "sproto_in_buffer_append: %i, datasize: %i", result,
               data_size);
+    srpc->last_iterate_reason = srpc_input_append_result_to_reason(result);
     return lck_unlock_r(srpc->lck, SUPLA_RESULT_FALSE);
   }
 
@@ -358,6 +376,7 @@ char SRPC_ICACHE_FLASH srpc_iterate(void *_srpc) {
 
     } else {
       supla_log(LOG_DEBUG, "ssrpc_in_queue_push error");
+      srpc->last_iterate_reason = SRPC_ITERATE_REASON_INPUT_QUEUE_ERROR;
       return lck_unlock_r(srpc->lck, SUPLA_RESULT_FALSE);
     }
 #endif /*SRPC_WITHOUT_IN_QUEUE*/
@@ -369,10 +388,14 @@ char SRPC_ICACHE_FLASH srpc_iterate(void *_srpc) {
         lck_unlock(srpc->lck);
 
         srpc->params.on_version_error(srpc, version, srpc->params.user_params);
-        return SUPLA_RESULT_FALSE;
+        lck_lock(srpc->lck);
+        srpc->last_iterate_reason = SRPC_ITERATE_REASON_VERSION_ERROR;
+        return lck_unlock_r(srpc->lck, SUPLA_RESULT_FALSE);
       }
+      srpc->last_iterate_reason = SRPC_ITERATE_REASON_VERSION_ERROR;
     } else {
       supla_log(LOG_DEBUG, "sproto_pop_in_sdp error: %i", result);
+      srpc->last_iterate_reason = SRPC_ITERATE_REASON_PROTOCOL_ERROR;
     }
 
     return lck_unlock_r(srpc->lck, SUPLA_RESULT_FALSE);
@@ -385,6 +408,7 @@ char SRPC_ICACHE_FLASH srpc_iterate(void *_srpc) {
           (result = sproto_out_buffer_append(srpc->proto, &srpc->sdp)) &&
       result != SUPLA_RESULT_FALSE) {
     supla_log(LOG_DEBUG, "sproto_out_buffer_append error: %i", result);
+    srpc->last_iterate_reason = SRPC_ITERATE_REASON_OUTPUT_BUFFER_ERROR;
     return lck_unlock_r(srpc->lck, SUPLA_RESULT_FALSE);
   }
 
@@ -409,6 +433,7 @@ char SRPC_ICACHE_FLASH srpc_iterate(void *_srpc) {
   }
 #endif /*__EH_DISABLED*/
 #endif /*SRPC_WITHOUT_OUT_QUEUE*/
+  srpc->last_iterate_reason = SRPC_ITERATE_REASON_NONE;
   return lck_unlock_r(srpc->lck, SUPLA_RESULT_TRUE);
 }
 
@@ -419,6 +444,7 @@ char SRPC_ICACHE_FLASH srpc_iterate_device(void *_srpc) {
   char result = SUPLA_RESULT_TRUE;
 
   lck_lock(srpc->lck);
+  srpc->last_iterate_reason = SRPC_ITERATE_REASON_NONE;
   _supla_int_t data_size = 0;
 
   while ((data_size = srpc->params.data_read(data_buffer, SRPC_BUFFER_SIZE,
@@ -427,6 +453,7 @@ char SRPC_ICACHE_FLASH srpc_iterate_device(void *_srpc) {
                                   srpc->proto, data_buffer, data_size))) {
       supla_log(LOG_DEBUG, "sproto_in_buffer_append: %i, datasize: %i", result,
                 data_size);
+      srpc->last_iterate_reason = srpc_input_append_result_to_reason(result);
       return lck_unlock_r(srpc->lck, SUPLA_RESULT_FALSE);
     }
 
@@ -450,10 +477,14 @@ char SRPC_ICACHE_FLASH srpc_iterate_device(void *_srpc) {
 
           srpc->params.on_version_error(srpc, version,
                                         srpc->params.user_params);
-          return SUPLA_RESULT_FALSE;
+          lck_lock(srpc->lck);
+          srpc->last_iterate_reason = SRPC_ITERATE_REASON_VERSION_ERROR;
+          return lck_unlock_r(srpc->lck, SUPLA_RESULT_FALSE);
         }
+        srpc->last_iterate_reason = SRPC_ITERATE_REASON_VERSION_ERROR;
       } else {
         supla_log(LOG_DEBUG, "sproto_pop_in_sdp error: %i", result);
+        srpc->last_iterate_reason = SRPC_ITERATE_REASON_PROTOCOL_ERROR;
       }
       return lck_unlock_r(srpc->lck, SUPLA_RESULT_FALSE);
     } else {
@@ -463,9 +494,11 @@ char SRPC_ICACHE_FLASH srpc_iterate_device(void *_srpc) {
   }
 
   if (data_size == 0) {
+    srpc->last_iterate_reason = SRPC_ITERATE_REASON_SOCKET_CLOSED;
     return lck_unlock_r(srpc->lck, SUPLA_RESULT_FALSE);
   }
 
+  srpc->last_iterate_reason = SRPC_ITERATE_REASON_NONE;
   return lck_unlock_r(srpc->lck, SUPLA_RESULT_TRUE);
 }
 #endif /*!SRPC_EXCLUDE_DEVICE*/
@@ -808,10 +841,11 @@ void SRPC_ICACHE_FLASH srpc_getlocationpack(Tsrpc *srpc,
       &srpc_locationpack_get_item_caption_size);
 }
 
-#define VALID_SIZE(MIAN_TYPE, ITEM_TYPE, SIZE_VAR, MAX)                   \
-  srpc->sdp.data_size >= (sizeof(MIAN_TYPE) - sizeof(ITEM_TYPE) * MAX) && \
-      srpc->sdp.data_size <= sizeof(MIAN_TYPE) &&                         \
-      (((MIAN_TYPE *)srpc->sdp.data)->SIZE_VAR) * sizeof(ITEM_TYPE) ==    \
+#define VALID_SIZE(MIAN_TYPE, ITEM_TYPE, SIZE_VAR, MAX)                       \
+  (((MIAN_TYPE *)srpc->sdp.data)->SIZE_VAR) <= MAX &&                         \
+      srpc->sdp.data_size >= (sizeof(MIAN_TYPE) - sizeof(ITEM_TYPE) * MAX) && \
+      srpc->sdp.data_size <= sizeof(MIAN_TYPE) &&                             \
+      (((MIAN_TYPE *)srpc->sdp.data)->SIZE_VAR) * sizeof(ITEM_TYPE) ==        \
           srpc->sdp.data_size - (sizeof(MIAN_TYPE) - sizeof(ITEM_TYPE) * MAX)
 
 char SRPC_ICACHE_FLASH srpc_getdata(void *_srpc, TsrpcReceivedData *rd,
@@ -825,6 +859,16 @@ char SRPC_ICACHE_FLASH srpc_getdata(void *_srpc, TsrpcReceivedData *rd,
   if (SUPLA_RESULT_TRUE == srpc_in_queue_pop(srpc, &srpc->sdp, rr_id)) {
     rd->call_id = srpc->sdp.call_id;
     rd->rr_id = srpc->sdp.rr_id;
+
+#ifdef SRPC_WITH_PACKET_LOG_HOOKS
+    if (srpc->params.on_packet_received != NULL) {
+      srpc->params.on_packet_received(_srpc,
+                                      rd->call_id,
+                                      srpc->sdp.data,
+                                      srpc->sdp.data_size,
+                                      srpc->params.user_params);
+    }
+#endif
 
     // first one
     rd->data.dcs_ping = NULL;
@@ -860,7 +904,8 @@ char SRPC_ICACHE_FLASH srpc_getdata(void *_srpc, TsrpcReceivedData *rd,
               (TDCS_SuplaPingServer *)calloc(1, sizeof(TDCS_SuplaPingServer));
 
 #ifndef __AVR__
-          if (srpc->sdp.data_size == sizeof(TDCS_SuplaPingServer_COMPAT)) {
+          if (rd->data.dcs_ping &&
+              srpc->sdp.data_size == sizeof(TDCS_SuplaPingServer_COMPAT)) {
             TDCS_SuplaPingServer_COMPAT *compat =
                 (TDCS_SuplaPingServer_COMPAT *)srpc->sdp.data;
 
@@ -1116,6 +1161,9 @@ char SRPC_ICACHE_FLASH srpc_getdata(void *_srpc, TsrpcReceivedData *rd,
           rd->data.sd_device_calcfg_request = (TSD_DeviceCalCfgRequest *)calloc(
               1, sizeof(TSD_DeviceCalCfgRequest));
         }
+        break;
+      case SUPLA_SD_CALL_DEVICE_SYNC_DONE:
+        call_with_no_data = 1;
         break;
       case SUPLA_DS_CALL_DEVICE_CALCFG_RESULT:
         if (VALID_SIZE(TDS_DeviceCalCfgResult, char, DataSize,
@@ -1856,6 +1904,8 @@ srpc_call_min_version_required(void *_srpc, unsigned _supla_int_t call_id) {
       return 25;
     case SUPLA_SC_CALL_CHANNEL_STATE_PACK_UPDATE:
       return 26;
+    case SUPLA_SD_CALL_DEVICE_SYNC_DONE:
+      return 29;
   }
 
   return 255;
@@ -1906,6 +1956,15 @@ _supla_int_t SRPC_ICACHE_FLASH srpc_async__call(void *_srpc,
   if (SUPLA_RESULT_TRUE ==
           sproto_set_data(&srpc->sdp, data, data_size, call_id) &&
       srpc_out_queue_push(srpc, &srpc->sdp)) {
+#ifdef SRPC_WITH_PACKET_LOG_HOOKS
+    if (srpc->params.on_packet_sent != NULL) {
+      srpc->params.on_packet_sent(_srpc,
+                                  call_id,
+                                  data,
+                                  data_size,
+                                  srpc->params.user_params);
+    }
+#endif
 #ifndef __EH_DISABLED
     if (srpc->params.eh != 0) {
       eh_raise_event(srpc->params.eh);
@@ -2217,6 +2276,15 @@ _supla_int_t SRPC_ICACHE_FLASH srpc_ds_async_registerdevice_in_chunks(
     header_size += sizeof(TDS_SuplaRegisterDeviceHeader);
     srpc->params.data_write((char *)&srpc->sdp, header_size,
                             srpc->params.user_params);
+#ifdef SRPC_WITH_PACKET_LOG_HOOKS
+    if (srpc->params.on_packet_sent != NULL) {
+      srpc->params.on_packet_sent(_srpc,
+                                  call_id,
+                                  (char *)&srpc->sdp,
+                                  header_size,
+                                  srpc->params.user_params);
+    }
+#endif
     // send channels here
     const unsigned _supla_int_t channel_size = sizeof(TDS_SuplaDeviceChannel_D);
     for (int i = 0; i < registerdevice->channel_count; i++) {
@@ -2224,6 +2292,15 @@ _supla_int_t SRPC_ICACHE_FLASH srpc_ds_async_registerdevice_in_chunks(
       if (data == NULL) continue;
       srpc->params.data_write((char *)data, channel_size,
                               srpc->params.user_params);
+#ifdef SRPC_WITH_PACKET_LOG_HOOKS
+      if (srpc->params.on_packet_sent != NULL) {
+        srpc->params.on_packet_sent(_srpc,
+                                    call_id,
+                                    (char *)data,
+                                    channel_size,
+                                    srpc->params.user_params);
+      }
+#endif
     }
     srpc->params.data_write(sproto_tag, SUPLA_TAG_SIZE,
                             srpc->params.user_params);
@@ -2274,6 +2351,15 @@ _supla_int_t SRPC_ICACHE_FLASH srpc_ds_async_registerdevice_in_chunks_g(
     header_size += sizeof(TDS_SuplaRegisterDeviceHeader);
     srpc->params.data_write((char *)&srpc->sdp, header_size,
                             srpc->params.user_params);
+#ifdef SRPC_WITH_PACKET_LOG_HOOKS
+    if (srpc->params.on_packet_sent != NULL) {
+      srpc->params.on_packet_sent(_srpc,
+                                  call_id,
+                                  (char *)&srpc->sdp,
+                                  header_size,
+                                  srpc->params.user_params);
+    }
+#endif
     // send channels here
     const unsigned _supla_int_t channel_size = sizeof(TDS_SuplaDeviceChannel_E);
     for (int i = 0; i < registerdevice->channel_count; i++) {
@@ -2281,6 +2367,15 @@ _supla_int_t SRPC_ICACHE_FLASH srpc_ds_async_registerdevice_in_chunks_g(
       if (data == NULL) continue;
       srpc->params.data_write((char *)data, channel_size,
                               srpc->params.user_params);
+#ifdef SRPC_WITH_PACKET_LOG_HOOKS
+      if (srpc->params.on_packet_sent != NULL) {
+        srpc->params.on_packet_sent(_srpc,
+                                    call_id,
+                                    (char *)data,
+                                    channel_size,
+                                    srpc->params.user_params);
+      }
+#endif
     }
     srpc->params.data_write(sproto_tag, SUPLA_TAG_SIZE,
                             srpc->params.user_params);
@@ -2368,6 +2463,10 @@ _supla_int_t SRPC_ICACHE_FLASH srpc_sd_async_get_firmware_update_url_result(
       _srpc, SUPLA_SD_CALL_GET_FIRMWARE_UPDATE_URL_RESULT, (char *)result,
       result->exists == 1 ? sizeof(TSD_FirmwareUpdate_UrlResult)
                           : sizeof(char));
+}
+
+_supla_int_t SRPC_ICACHE_FLASH srpc_sd_async_device_sync_done(void *_srpc) {
+  return srpc_async_call(_srpc, SUPLA_SD_CALL_DEVICE_SYNC_DONE, NULL, 0);
 }
 
 _supla_int_t SRPC_ICACHE_FLASH srpc_ds_async_channel_value_changed(

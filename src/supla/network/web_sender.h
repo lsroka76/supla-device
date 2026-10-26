@@ -1,27 +1,24 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
-
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
-
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #ifndef SRC_SUPLA_NETWORK_WEB_SENDER_H_
 #define SRC_SUPLA_NETWORK_WEB_SENDER_H_
 
 #include <stddef.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <supla/network/html_generator.h>
+
+#if defined(ARDUINO_ARCH_ESP8266)
+#include <pgmspace.h>
+#define SUPLA_WEB_PROGMEM PROGMEM
+#define SUPLA_WEB_SNPRINTF(buffer, size, format, ...) \
+  snprintf_P(buffer, size, PSTR(format), ##__VA_ARGS__)
+#else
+#define SUPLA_WEB_PROGMEM
+#define SUPLA_WEB_SNPRINTF(buffer, size, format, ...) \
+  snprintf(buffer, size, format, ##__VA_ARGS__)
+#endif
 
 namespace Supla {
 
@@ -88,6 +85,11 @@ class HtmlTag {
    * @brief Append a quoted HTML attribute with escaped value.
    */
   HtmlTag& attr(const char* name, const char* value);
+
+  // Static attribute value in SUPLA_WEB_PROGMEM, escaped as ordinary attr().
+  HtmlTag& attrStatic(const char* name,
+                      const char* value,
+                      size_t size = static_cast<size_t>(-1));
 
   /**
    * @brief Append a quoted HTML attribute with integer value.
@@ -194,6 +196,18 @@ class WebSender {
    */
   virtual ~WebSender();
   virtual void send(const char*, int size = -1) = 0;
+
+  /**
+   * @brief Emit a static HTML asset stored in program memory.
+   *
+   * ESP8266 Arduino requires explicit reads from PROGMEM. Other supported
+   * targets can send ordinary const data directly. Omitted size reads a
+   * terminating NUL with strlen_P on ESP8266. escape preserves sendSafe rules.
+   */
+  void sendStatic(const char* data,
+                  size_t size = static_cast<size_t>(-1),
+                  bool escape = false);
+
   virtual void sendSafe(const char*, int size = -1);
   virtual void send(int number);
   virtual void send(int number, int precision);
@@ -203,6 +217,7 @@ class WebSender {
                               const char* label,
                               bool selected,
                               bool emptyValue = false);
+  virtual void sendCsrfField();
   virtual void sendHidden(bool hidden);
   virtual void sendReadonly(bool readonly);
   virtual void sendDisabled(bool disabled);
@@ -301,7 +316,10 @@ class WebSender {
   void textInput(const char* name,
                  const char* id,
                  const char* value = nullptr,
-                 int maxLength = -1);
+                 int maxLength = -1,
+                 const char* listId = nullptr,
+                 const char* onInput = nullptr,
+                 const char* onChange = nullptr);
 
   /**
    * @brief Emit a password input control.

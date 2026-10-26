@@ -1,22 +1,10 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "local_action.h"
 
 #include <supla/action_handler.h>
+#include <supla/actions.h>
 
 namespace Supla {
 
@@ -57,11 +45,27 @@ bool ActionHandlerClient::isEnabled() {
 
 void ActionHandlerClient::enable() {
   enabled = true;
+  disabledForConfigMode = false;
 }
 
 void ActionHandlerClient::disable() {
   if (!alwaysEnabled) {
     enabled = false;
+    disabledForConfigMode = false;
+  }
+}
+
+void ActionHandlerClient::disableForConfigMode() {
+  if (!alwaysEnabled && enabled) {
+    enabled = false;
+    disabledForConfigMode = true;
+  }
+}
+
+void ActionHandlerClient::restoreAfterConfigMode() {
+  if (disabledForConfigMode) {
+    enabled = true;
+    disabledForConfigMode = false;
   }
 }
 
@@ -103,14 +107,53 @@ void LocalAction::addAction(uint16_t action,
 }
 
 void LocalAction::runAction(uint16_t event) const {
+  runActionInternal(event, nullptr);
+}
+
+void LocalAction::runAction(
+    uint16_t event, const ActionAllowList &allowOnlyActions) const {
+  runActionInternal(event, &allowOnlyActions);
+}
+
+void LocalAction::runActionInternal(
+    uint16_t event, const ActionAllowList *allowOnlyActions) const {
   auto ptr = ActionHandlerClient::begin;
   while (ptr) {
+    bool actionAllowed = allowOnlyActions == nullptr ||
+                         allowOnlyActions->contains(ptr->action);
+    bool duplicateLockAction = false;
+    if (allowOnlyActions != nullptr && actionAllowed && ptr->client &&
+        (ptr->action == Supla::LOCK || ptr->action == Supla::UNLOCK ||
+         ptr->action == Supla::TOGGLE_LOCK)) {
+      auto previous = ActionHandlerClient::begin;
+      while (previous != ptr) {
+        if (previous->client == ptr->client &&
+            previous->trigger == this && previous->onEvent == event &&
+            previous->action == ptr->action && previous->isEnabled()) {
+          duplicateLockAction = true;
+          break;
+        }
+        previous = previous->next;
+      }
+    }
     if (ptr->client && ptr->trigger == this && ptr->onEvent == event &&
-        ptr->isEnabled()) {
+        ptr->isEnabled() && actionAllowed && !duplicateLockAction) {
       ptr->client->handleAction(event, ptr->action);
     }
     ptr = ptr->next;
   }
+}
+
+bool LocalAction::hasEnabledAction(uint16_t event, uint16_t action) const {
+  auto ptr = ActionHandlerClient::begin;
+  while (ptr) {
+    if (ptr->client && ptr->trigger == this && ptr->onEvent == event &&
+        ptr->action == action && ptr->isEnabled()) {
+      return true;
+    }
+    ptr = ptr->next;
+  }
+  return false;
 }
 
 ActionHandlerClient *LocalAction::getClientListPtr() {
@@ -239,10 +282,18 @@ void LocalAction::enableAction(int32_t action,
 }
 
 void LocalAction::DeleteActionsHandledBy(const ActionHandler *client) {
+  DeleteActionsHandledByExcept(client, {});
+}
+
+void LocalAction::DeleteActionsHandledByExcept(
+    const ActionHandler *client,
+    const ActionAllowList &preservedActions) {
   auto ptr = ActionHandlerClient::begin;
   while (ptr) {
     auto next = ptr->next;
-    if (ptr->client && ptr->client->getRealClient() == client) {
+    bool preserve = false;
+    preserve = preservedActions.contains(ptr->action);
+    if (!preserve && ptr->client && ptr->client->getRealClient() == client) {
       delete ptr;
       next = ActionHandlerClient::begin;
     }
@@ -255,6 +306,22 @@ void LocalAction::DeleteActionsTriggeredBy(const LocalAction *trigger) {
   while (ptr) {
     auto next = ptr->next;
     if (ptr->trigger == trigger) {
+      delete ptr;
+      next = ActionHandlerClient::begin;
+    }
+    ptr = next;
+  }
+}
+
+void LocalAction::DeleteAction(const LocalAction *trigger,
+                               const ActionHandler *client,
+                               uint16_t event,
+                               uint16_t action) {
+  auto ptr = ActionHandlerClient::begin;
+  while (ptr) {
+    auto next = ptr->next;
+    if (ptr->trigger == trigger && ptr->client == client &&
+        ptr->onEvent == event && ptr->action == action) {
       delete ptr;
       next = ActionHandlerClient::begin;
     }

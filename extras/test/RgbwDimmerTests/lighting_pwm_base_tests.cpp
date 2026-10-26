@@ -1,32 +1,22 @@
-/*
-   Copyright (C) AC SOFTWARE SP. Z O.O
-
-   This program is free software; you can redistribute it and/or
-   modify it under the terms of the GNU General Public License
-   as published by the Free Software Foundation; either version 2
-   of the License, or (at your option) any later version.
-
-   This program is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
-
-   You should have received a copy of the GNU General Public License
-   along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <arduino_mock.h>
+#include <config_mock.h>
 #include <supla/control/lighting_pwm_base.h>
 #include <supla/actions.h>
+#include <supla/storage/config_tags.h>
 #include <storage_mock.h>
 #include <simple_time.h>
 
 using ::testing::Return;
 using ::testing::_;
 using ::testing::Le;
+using ::testing::InSequence;
+using ::testing::NiceMock;
+using ::testing::StrEq;
 
 class RgbCctBaseForTest : public Supla::Control::LightingPwmBase {
  public:
@@ -34,6 +24,15 @@ class RgbCctBaseForTest : public Supla::Control::LightingPwmBase {
               setRGBCCTValueOnDevice,
               (uint32_t[5], int),
               (override));
+
+  void setCctGainsForTest(float warmGain, float coldGain) {
+    warmWhiteGain = warmGain;
+    coldWhiteGain = coldGain;
+  }
+
+  void setMaxHwValueForTest(int value) {
+    setMaxHwValue(value);
+  }
 };
 
 void setRGBCCTValues(TRGBW_Value *value,
@@ -225,6 +224,123 @@ TEST(RgbCctTests, BasicTests) {
   EXPECT_EQ(ch->getValueWhiteTemperature(), 60);
 }
 
+TEST(RgbCctTests, ManualSuspensionPersistsAcrossIteration) {
+  Supla::Channel::resetToDefaults();
+  SimpleTime time;
+  RgbCctBaseForTest rgb;
+
+  time.advance(500);
+  rgb.onInit();
+  ASSERT_FALSE(rgb.isChannelSuspended());
+
+  EXPECT_CALL(rgb, setRGBCCTValueOnDevice(_, 0));
+  rgb.setChannelSuspended(true);
+
+  EXPECT_TRUE(rgb.isChannelSuspended());
+  EXPECT_TRUE(rgb.getChannel()->isStateOnlineAndNotAvailable());
+
+  time.advance(500);
+  rgb.iterateAlways();
+  EXPECT_TRUE(rgb.isChannelSuspended());
+  EXPECT_TRUE(rgb.getChannel()->isStateOnlineAndNotAvailable());
+
+  rgb.setChannelSuspended(false);
+  EXPECT_FALSE(rgb.isChannelSuspended());
+  EXPECT_FALSE(rgb.getChannel()->isStateOnlineAndNotAvailable());
+}
+
+TEST(RgbCctTests, ManualSuspensionRejectsControlCommands) {
+  Supla::Channel::resetToDefaults();
+  SimpleTime time;
+  RgbCctBaseForTest rgb;
+
+  time.advance(500);
+  rgb.onInit();
+  time.advance(500);
+  rgb.iterateAlways();
+
+  auto channel = rgb.getChannel();
+  ASSERT_NE(channel, nullptr);
+  ASSERT_EQ(channel->getValueRed(), 0);
+  ASSERT_EQ(channel->getValueGreen(), 255);
+  ASSERT_EQ(channel->getValueBlue(), 0);
+  ASSERT_EQ(channel->getValueColorBrightness(), 0);
+  ASSERT_EQ(channel->getValueBrightness(), 0);
+
+  EXPECT_CALL(rgb, setRGBCCTValueOnDevice(_, 0));
+  rgb.setChannelSuspended(true);
+
+  StorageMock storage;
+  EXPECT_CALL(storage, scheduleSave(_, _)).Times(0);
+
+  TSD_SuplaChannelNewValue msg = {};
+  setRGBCCTValues(reinterpret_cast<TRGBW_Value *>(msg.value),
+                  10,
+                  20,
+                  30,
+                  40,
+                  50,
+                  60,
+                  0,
+                  RGBW_COMMAND_NOT_SET);
+  EXPECT_EQ(rgb.handleNewValueFromServer(&msg), 0);
+  rgb.handleAction(0, Supla::TURN_ON);
+
+  time.advance(500);
+  rgb.iterateAlways();
+  EXPECT_EQ(channel->getValueRed(), 0);
+  EXPECT_EQ(channel->getValueGreen(), 255);
+  EXPECT_EQ(channel->getValueBlue(), 0);
+  EXPECT_EQ(channel->getValueColorBrightness(), 0);
+  EXPECT_EQ(channel->getValueBrightness(), 0);
+  EXPECT_EQ(channel->getValueWhiteTemperature(), 0);
+}
+
+TEST(RgbCctTests, CctGainMappingUsesWarmAndColdChannels) {
+  Supla::Channel::resetToDefaults();
+  SimpleTime time;
+  RgbCctBaseForTest rgb;
+
+  rgb.getChannel()->setDefaultFunction(SUPLA_CHANNELFNC_DIMMER_CCT);
+  rgb.setMaxHwValueForTest(1000);
+  rgb.setCctGainsForTest(0.25f, 2.0f);
+  rgb.setFadeEffectTime(0);
+
+  time.advance(1000);
+  rgb.onInit();
+
+  TSD_SuplaChannelNewValue msg = {};
+  setRGBCCTValues(reinterpret_cast<TRGBW_Value *>(msg.value),
+                  0,
+                  0,
+                  0,
+                  0,
+                  100,
+                  25,
+                  0,
+                  RGBW_COMMAND_NOT_SET);
+  rgb.handleNewValueFromServer(&msg);
+
+  uint32_t output[5] = {};
+  int usedOutputs = 0;
+  EXPECT_CALL(rgb, setRGBCCTValueOnDevice(_, 2))
+      .WillOnce([&](uint32_t values[5], int used) {
+        for (int i = 0; i < used; i++) {
+          output[i] = values[i];
+        }
+        usedOutputs = used;
+      });
+
+  time.advance(1);
+  rgb.onFastTimer();
+  time.advance(1);
+  rgb.onFastTimer();
+
+  EXPECT_EQ(usedOutputs, 2);
+  EXPECT_EQ(output[0], 187U);
+  EXPECT_EQ(output[1], 500U);
+}
+
 TEST(RgbCctTests, LegacyStorageMigrationIsOptIn) {
   RgbCctBaseForTest rgb;
 
@@ -237,4 +353,95 @@ TEST(RgbCctTests, LegacyStorageMigrationIsOptIn) {
 
   rgb.setSkipLegacyMigration();
   EXPECT_FALSE(rgb.isStateStorageMigrationNeeded());
+}
+
+namespace {
+
+void expectLegacyMigrationMarkerPersisted(
+    Supla::Control::LightingPwmBase::LegacyChannelFunction legacyFunction) {
+  Supla::Channel::resetToDefaults();
+  SimpleTime time;
+  NiceMock<ConfigMock> config;
+  RgbCctBaseForTest rgb;
+  rgb.convertStorageFromLegacyChannel(legacyFunction);
+
+  time.advance(500);
+  rgb.onInit();
+
+  char migrationKey[SUPLA_CONFIG_MAX_KEY_SIZE] = {};
+  Supla::Config::generateKey(migrationKey,
+                             rgb.getChannel()->getChannelNumber(),
+                             Supla::ConfigTag::LegacyMigrationTag);
+
+  {
+    InSequence sequence;
+    EXPECT_CALL(config, getUInt8(StrEq(migrationKey), _))
+        .WillOnce(Return(false));
+    EXPECT_CALL(config, setUInt8(StrEq(migrationKey), 1))
+        .WillOnce(Return(true));
+    EXPECT_CALL(config, saveWithDelay(1000));
+  }
+
+  rgb.onSaveState();
+
+  EXPECT_FALSE(rgb.isStateStorageMigrationNeeded());
+}
+
+}  // namespace
+
+TEST(RgbCctTests, LegacyRgbMigrationPersistsCompletionMarker) {
+  expectLegacyMigrationMarkerPersisted(
+      Supla::Control::LightingPwmBase::LegacyChannelFunction::RGB);
+}
+
+TEST(RgbCctTests, LegacyRgbwMigrationPersistsCompletionMarker) {
+  expectLegacyMigrationMarkerPersisted(
+      Supla::Control::LightingPwmBase::LegacyChannelFunction::RGBW);
+}
+
+TEST(RgbCctTests, LegacyDimmerMigrationPersistsCompletionMarker) {
+  expectLegacyMigrationMarkerPersisted(
+      Supla::Control::LightingPwmBase::LegacyChannelFunction::Dimmer);
+}
+
+TEST(RgbCctTests, ExistingMigrationMarkerDoesNotRequestConfigPersistence) {
+  Supla::Channel::resetToDefaults();
+  SimpleTime time;
+  NiceMock<ConfigMock> config;
+  RgbCctBaseForTest rgb;
+  rgb.convertStorageFromLegacyChannel(
+      Supla::Control::LightingPwmBase::LegacyChannelFunction::RGB);
+
+  time.advance(500);
+  rgb.onInit();
+
+  char migrationKey[SUPLA_CONFIG_MAX_KEY_SIZE] = {};
+  Supla::Config::generateKey(migrationKey,
+                             rgb.getChannel()->getChannelNumber(),
+                             Supla::ConfigTag::LegacyMigrationTag);
+
+  EXPECT_CALL(config, getUInt8(StrEq(migrationKey), _))
+      .WillOnce([](const char *, uint8_t *value) {
+        *value = 1;
+        return true;
+      });
+  EXPECT_CALL(config, setUInt8(_, _)).Times(0);
+  EXPECT_CALL(config, saveWithDelay(_)).Times(0);
+
+  rgb.onSaveState();
+
+  EXPECT_FALSE(rgb.isStateStorageMigrationNeeded());
+}
+
+TEST(RgbCctTests, StateSaveWithoutMigrationDoesNotRequestConfigPersistence) {
+  Supla::Channel::resetToDefaults();
+  NiceMock<ConfigMock> config;
+  RgbCctBaseForTest rgb;
+
+  EXPECT_CALL(config, getUInt8(_, _)).Times(0);
+  EXPECT_CALL(config, setUInt8(_, _)).Times(0);
+  EXPECT_CALL(config, saveWithDelay(_)).Times(0);
+
+  rgb.onSaveState();
+  rgb.onSaveState();
 }

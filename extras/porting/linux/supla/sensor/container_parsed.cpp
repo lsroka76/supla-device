@@ -1,20 +1,5 @@
-/*
-   Copyright (C) AC SOFTWARE SP. Z O.O
-
-   This program is free software; you can redistribute it and/or
-   modify it under the terms of the GNU General Public License
-   as published by the Free Software Foundation; either version 2
-   of the License, or (at your option) any later version.
-
-   This program is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
-
-   You should have received a copy of the GNU General Public License
-   along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "container_parsed.h"
 
@@ -29,26 +14,26 @@ ContainerParsed::ContainerParsed(Supla::Parser::Parser *parser)
 
 
 void ContainerParsed::onInit() {
-  channel.setNewValue(readNewValue());
+  channel.setContainerFillValue(readNewValue());
 }
 
 int ContainerParsed::readNewValue() {
   int value = 0;
 
   if (isParameterConfigured(Supla::Parser::Level)) {
-    if (refreshParserSource()) {
+    const bool sourceRefreshed = refreshParserSource();
+    if (sourceRefreshed) {
       value = getParameterValue(Supla::Parser::Level);
     }
-    if (!parser->isValid()) {
+    if (!sourceRefreshed || !parser->isValid()) {
       if (!isDataErrorLogged) {
         isDataErrorLogged = true;
         SUPLA_LOG_WARNING("ContainerParsed[%d]: source data error",
                           getChannelNumber());
       }
-      return 0;
+      return -1;
     }
     isDataErrorLogged = false;
   }
   return value;
 }
-

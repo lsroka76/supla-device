@@ -1,41 +1,189 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
-
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
-
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "action_trigger.h"
 
+#include <SuplaDevice.h>
+#include <supla/auto_lock.h>
 #include <supla/log_wrapper.h>
+#include <supla/local_action.h>
 #include <supla/storage/storage.h>
 #include <supla/storage/config.h>
 #include <supla/protocol/supla_srpc.h>
 #include <supla/control/button.h>
 #include <supla/events.h>
 #include <supla/storage/config_tags.h>
+#include <supla/time.h>
+
+#include "weekly_schedule_common.h"
+#include "weekly_schedule_storage.h"
+
+namespace {
+
+// ActionTrigger state storage historically contains only a uint32_t with
+// active actions. Keep that layout unchanged and use its two highest bits for
+// the mutually exclusive weekly-schedule/locked state. If more state is
+// needed, this format should be redesigned to use a wider dedicated field.
+constexpr uint32_t kActionTriggerStateModeMask = 0xC0000000UL;
+constexpr uint32_t kActionTriggerStateWeeklySchedule = 0x40000000UL;
+constexpr uint32_t kActionTriggerStateLocked = 0x80000000UL;
+constexpr uint32_t kActionTriggerLegacyAllActions = 0xFFFFFFFFUL;
+
+}  // namespace
+
+namespace Supla {
+namespace Control {
+
+class ActionTriggerWeeklySchedule : public NativeWeeklyScheduleController {
+ public:
+  explicit ActionTriggerWeeklySchedule(ActionTrigger *owner) : owner_(owner) {
+  }
+
+ protected:
+  Supla::Element *getScheduleOwner() const override {
+    return owner_;
+  }
+
+  const char *getDeviceLabel() const override {
+    return "ActionTrigger";
+  }
+
+  const char *getScheduleStorageTag(bool alt) const override {
+    (void)(alt);
+    return Supla::ConfigTag::ActionTriggerWeeklyCfgTag;
+  }
+
+  bool validateSchedule(const TChannelConfig_WeeklySchedule *schedule,
+                        bool alt) const override {
+    (void)(alt);
+    if (schedule == nullptr || owner_ == nullptr) {
+      return false;
+    }
+    for (int i = 0; i < SUPLA_WEEKLY_SCHEDULE_PROGRAMS_MAX_SIZE; i++) {
+      if (!owner_->isWeeklyScheduleProgramModeSupported(
+              schedule->Program[i].Mode)) {
+        SUPLA_LOG_WARNING(
+            "ActionTrigger[%d]: invalid weekly schedule program %d",
+            owner_->getChannelNumber(),
+            i);
+        return false;
+      }
+    }
+    for (int i = 0; i < SUPLA_WEEKLY_SCHEDULE_VALUES_SIZE; i++) {
+      int programId = getProgramId(schedule, i);
+      if (programId < 0 ||
+          programId > SUPLA_WEEKLY_SCHEDULE_PROGRAMS_MAX_SIZE) {
+        SUPLA_LOG_WARNING(
+            "ActionTrigger[%d]: weekly schedule references invalid program %d",
+            owner_->getChannelNumber(),
+            programId);
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void fillDefaultSchedule(TChannelConfig_WeeklySchedule *schedule,
+                           bool alt) override {
+    (void)(alt);
+    if (owner_ != nullptr) {
+      owner_->fillDefaultWeeklySchedule(schedule);
+    }
+  }
+
+  void scheduleWeeklyScheduleStateSave() override {
+    if (owner_ != nullptr) {
+      owner_->scheduleStateSave();
+    }
+  }
+
+  void syncWeeklyScheduleMode(uint8_t mode) override {
+    if (owner_ == nullptr) {
+      return;
+    }
+    owner_->channel.setWeeklyScheduleEnabled(isActive());
+    owner_->applyButtonMode(isActive() ? mode : SUPLA_BUTTON_MODE_NOT_SET);
+  }
+
+ private:
+  ActionTrigger *owner_ = nullptr;
+};
+
+}  // namespace Control
+}  // namespace Supla
+
+namespace {
+// Recognize an actual directional pair, not arbitrary conditional handlers.
+bool isDirectionalHandler(const Supla::ActionHandlerClient *handler) {
+  int press = -1;
+  int release = -1;
+  switch (handler->action) {
+    case Supla::MOVE_UP:
+    case Supla::UP_STOP:
+      press = Supla::MOVE_UP;
+      release = Supla::UP_STOP;
+      break;
+    case Supla::MOVE_DOWN:
+    case Supla::DOWN_STOP:
+      press = Supla::MOVE_DOWN;
+      release = Supla::DOWN_STOP;
+      break;
+    case Supla::INTERNAL_BUTTON_MOVE_UP:
+    case Supla::INTERNAL_BUTTON_UP_STOP:
+      press = Supla::INTERNAL_BUTTON_MOVE_UP;
+      release = Supla::INTERNAL_BUTTON_UP_STOP;
+      break;
+    case Supla::INTERNAL_BUTTON_MOVE_DOWN:
+    case Supla::INTERNAL_BUTTON_DOWN_STOP:
+      press = Supla::INTERNAL_BUTTON_MOVE_DOWN;
+      release = Supla::INTERNAL_BUTTON_DOWN_STOP;
+      break;
+    default:
+      return false;
+  }
+  const bool isPress = handler->action == press &&
+      handler->onEvent == Supla::CONDITIONAL_ON_PRESS;
+  const bool isRelease = handler->action == release &&
+      handler->onEvent == Supla::CONDITIONAL_ON_RELEASE;
+  if (!handler->client || (!isPress && !isRelease)) {
+    return false;
+  }
+  for (auto other = Supla::ActionHandlerClient::begin; other;
+       other = other->next) {
+    if (other->trigger == handler->trigger &&
+        other->client == handler->client &&
+        other->action == (isPress ? release : press) &&
+        other->onEvent == (isPress ? Supla::CONDITIONAL_ON_RELEASE
+                                  : Supla::CONDITIONAL_ON_PRESS)) {
+      return true;
+    }
+  }
+  return false;
+}
+}  // namespace
 
 Supla::Control::ActionTrigger::ActionTrigger() {
   channel.setType(SUPLA_CHANNELTYPE_ACTIONTRIGGER);
   channel.setDefaultFunction(SUPLA_CHANNELFNC_ACTIONTRIGGER);
+  channel.setFlag(SUPLA_CHANNEL_FLAG_BUTTON_MODE_SUPPORTED);
+  channel.setFlag(SUPLA_CHANNEL_FLAG_RUNTIME_CHANNEL_CONFIG_UPDATE);
+  usedConfigTypes.set(SUPLA_CONFIG_TYPE_DEFAULT);
 }
 
 Supla::Control::ActionTrigger::~ActionTrigger() {
 }
 
 void Supla::Control::ActionTrigger::attach(Supla::Control::Button *button) {
+  if (attachedButton != nullptr && attachedButton != button) {
+    attachedButton->setActionTriggerModeLocked(false, false, false);
+  }
   attachedButton = button;
+  if (attachedButton != nullptr) {
+    attachedButton->setActionTriggerModeLocked(
+        channel.getButtonMode() == SUPLA_BUTTON_MODE_LOCKED,
+        runtimeFlags.localUnlockAllowed,
+        runtimeFlags.keepConfigButtonTriggerAlwaysAvailable);
+  }
 }
 
 void Supla::Control::ActionTrigger::attach(Supla::Control::Button &button) {
@@ -43,7 +191,32 @@ void Supla::Control::ActionTrigger::attach(Supla::Control::Button &button) {
 }
 
 void Supla::Control::ActionTrigger::handleAction(int, int action) {
-  if (!enabled) {
+  if (!runtimeFlags.enabled) {
+    return;
+  }
+
+  switch (action) {
+    case Supla::LOCK:
+      applyManualButtonMode(SUPLA_BUTTON_MODE_LOCKED);
+      return;
+    case Supla::UNLOCK:
+      if (channel.getButtonMode() != SUPLA_BUTTON_MODE_LOCKED ||
+          runtimeFlags.localUnlockAllowed) {
+        applyManualButtonMode(SUPLA_BUTTON_MODE_NOT_SET);
+      }
+      return;
+    case Supla::TOGGLE_LOCK:
+      if (channel.getButtonMode() != SUPLA_BUTTON_MODE_LOCKED ||
+          runtimeFlags.localUnlockAllowed) {
+        applyManualButtonMode(
+            channel.getButtonMode() == SUPLA_BUTTON_MODE_LOCKED
+                ? SUPLA_BUTTON_MODE_NOT_SET
+                : SUPLA_BUTTON_MODE_LOCKED);
+      }
+      return;
+  }
+
+  if (channel.getButtonMode() == SUPLA_BUTTON_MODE_LOCKED) {
     return;
   }
   uint32_t actionCap = getActionTriggerCap(action);
@@ -63,7 +236,10 @@ const Supla::Channel *Supla::Control::ActionTrigger::getChannel() const {
 }
 
 void Supla::Control::ActionTrigger::activateAction(int action) {
-  channel.activateAction(getActionTriggerCap(action));
+  const uint32_t actionCap = getActionTriggerCap(action);
+  if (actionCap != 0) {
+    channel.activateAction(actionCap);
+  }
 }
 
 int Supla::Control::ActionTrigger::getActionTriggerCap(int action) {
@@ -195,11 +371,12 @@ int Supla::Control::ActionTrigger::actionTriggerCapToButtonEvent(
 
 void Supla::Control::ActionTrigger::onRegistered(
     Supla::Protocol::SuplaSrpc *suplaSrpc) {
-  Supla::Element::onRegistered(suplaSrpc);
+  Supla::ElementWithChannelActions::onRegistered(suplaSrpc);
   // cleanup actions to be send
   while (channel.popAction()) {
   }
 
+  channel.enableValueUpdates();
   channel.setSendGetConfig();
 }
 
@@ -216,7 +393,7 @@ void Supla::Control::ActionTrigger::parseActiveActionsFromServer() {
 
     if (activeActionsFromServer ||
         actionHandlingType == ActionHandlingType_PublishAllDisableNone ||
-        alwaysUseOnClick1) {
+        runtimeFlags.alwaysUseOnClick1) {
       // disable on_press, on_release, on_change local actions and enable
       // on_click_1
       if (localHandlerForDisabledAt && localHandlerForEnabledAt) {
@@ -251,7 +428,7 @@ void Supla::Control::ActionTrigger::parseActiveActionsFromServer() {
           actionHandlingType == ActionHandlingType_PublishAllDisableNone) {
         attachedButton->enableAction(actionId, this, eventId);
       } else {
-        if (eventId != Supla::ON_CLICK_1 || !alwaysUseOnClick1) {
+        if (eventId != Supla::ON_CLICK_1 || !runtimeFlags.alwaysUseOnClick1) {
           attachedButton->disableAction(actionId, this, eventId);
         }
       }
@@ -270,6 +447,12 @@ void Supla::Control::ActionTrigger::parseActiveActionsFromServer() {
                                               Supla::ON_CHANGE);
           attachedButton->disableOtherClients(this,
                                               Supla::CONDITIONAL_ON_CHANGE);
+          if (attachedButton->isBistable()) {
+            attachedButton->disableOtherClients(
+                this, Supla::CONDITIONAL_ON_PRESS);
+            attachedButton->disableOtherClients(
+                this, Supla::CONDITIONAL_ON_RELEASE);
+          }
         } else if (eventId == Supla::ON_HOLD) {
           attachedButton->disableOtherClients(this,
                                               Supla::ON_HOLD_RELEASE);
@@ -287,43 +470,149 @@ void Supla::Control::ActionTrigger::parseActiveActionsFromServer() {
                                              Supla::ON_CHANGE);
           attachedButton->enableOtherClients(this,
                                              Supla::CONDITIONAL_ON_CHANGE);
+          if (attachedButton->isBistable() &&
+              !(activeActionsFromServer &
+                (SUPLA_ACTION_CAP_TURN_ON | SUPLA_ACTION_CAP_TURN_OFF))) {
+            attachedButton->enableOtherClients(
+                this, Supla::CONDITIONAL_ON_PRESS);
+            attachedButton->enableOtherClients(
+                this, Supla::CONDITIONAL_ON_RELEASE);
+          }
         } else if (eventId == Supla::ON_HOLD) {
           attachedButton->enableOtherClients(this,
                                              Supla::ON_HOLD_RELEASE);
         }
         if (makeSureThatOnClick1IsDisabled && eventId == Supla::ON_CLICK_1) {
           makeSureThatOnClick1IsDisabled = false;
-          localHandlerForEnabledAt->disable();
+          if (localHandlerForEnabledAt) {
+            localHandlerForEnabledAt->disable();
+          }
         }
         if (makeSureThatOnChangePressReleaseIsDisabled &&
             eventId == Supla::ON_CLICK_1) {
           makeSureThatOnChangePressReleaseIsDisabled = false;
-          localHandlerForDisabledAt->disable();
+          if (localHandlerForDisabledAt) {
+            localHandlerForDisabledAt->disable();
+          }
+        }
+      }
+    }
+    // TURN_ON/OFF publish raw edges. Only TOGGLE_x1 overrides the paired
+    // local motor operation, independently of other handlers on these events.
+    if (attachedButton->isBistable()) {
+      for (auto handler = Supla::ActionHandlerClient::begin; handler;
+           handler = handler->next) {
+        if (handler->trigger == attachedButton &&
+            isDirectionalHandler(handler)) {
+          if (activeActionsFromServer & SUPLA_ACTION_CAP_TOGGLE_x1) {
+            handler->disable();
+          } else {
+            handler->enable();
+          }
         }
       }
     }
   }
+  synchronizeDirectionalButtonModes();
 }
 
-uint8_t Supla::Control::ActionTrigger::handleChannelConfig(
-    TSD_ChannelConfig *result, bool local) {
-  (void)(local);
-  if (result->ConfigType == SUPLA_CONFIG_TYPE_DEFAULT &&
-      result->ConfigSize == sizeof(TChannelConfig_ActionTrigger)) {
-    TChannelConfig_ActionTrigger *config =
-      reinterpret_cast<TChannelConfig_ActionTrigger *>(result->Config);
-    activeActionsFromServer = config->ActiveActions;
-    SUPLA_LOG_DEBUG(
-        "AT[%d] received config with active actions: 0x%X",
-        channel.getChannelNumber(),
-        activeActionsFromServer);
-    parseActiveActionsFromServer();
-    if (storageEnabled) {
-      // Schedule save in 2 s after state change
-      Supla::Storage::ScheduleSave(2000);
+bool Supla::Control::ActionTrigger::hasDirectionalPair() const {
+  if (!attachedButton || !attachedButton->isBistable()) {
+    return false;
+  }
+  for (auto handler = Supla::ActionHandlerClient::begin; handler;
+       handler = handler->next) {
+    if (handler->trigger == attachedButton && isDirectionalHandler(handler)) {
+      return true;
     }
   }
-  return SUPLA_RESULTCODE_TRUE;
+  return false;
+}
+
+bool Supla::Control::ActionTrigger::requiresClickMode() const {
+  return activeActionsFromServer || runtimeFlags.alwaysUseOnClick1 ||
+      actionHandlingType != ActionHandlingType_RelayOnSuplaServer;
+}
+
+void Supla::Control::ActionTrigger::synchronizeDirectionalButtonModes() {
+  // Configuration-time scan only: no peer pointers, extra RAM or timer work.
+  for (auto element = Supla::Element::begin(); element;
+       element = element->next()) {
+    auto at = element->getActionTrigger();
+    if (!at || !at->attachedButton) {
+      continue;
+    }
+    bool useClicks = false;
+    if (at->hasDirectionalPair()) {
+      useClicks = at->requiresClickMode();
+      const auto related = at->channel.getRelatedChannelNumber();
+      if (related && !useClicks) {
+        for (auto peerElement = Supla::Element::begin(); peerElement;
+             peerElement = peerElement->next()) {
+          auto peer = peerElement->getActionTrigger();
+          if (peer && peer->channel.getRelatedChannelNumber() == related &&
+              peer->hasDirectionalPair() && peer->requiresClickMode()) {
+            useClicks = true;
+            break;
+          }
+        }
+      }
+    }
+    at->attachedButton->setConditionalActionsOnClick1(useClicks);
+  }
+}
+
+Supla::ApplyConfigResult Supla::Control::ActionTrigger::applyChannelConfig(
+    TSD_ChannelConfig *result, bool local) {
+  if (result == nullptr) {
+    return Supla::ApplyConfigResult::DataError;
+  }
+  if (result->ConfigType == SUPLA_CONFIG_TYPE_WEEKLY_SCHEDULE) {
+    if (!runtimeFlags.weeklyScheduleAvailable) {
+      return Supla::ApplyConfigResult::NotSupported;
+    }
+    ensureNativeWeeklyScheduleController();
+    auto *configHandler = weeklyScheduleComponents.getConfigHandler();
+    return configHandler == nullptr
+               ? Supla::ApplyConfigResult::NotSupported
+               : configHandler->applyChannelConfig(result, local);
+  }
+  if (result->ConfigType != SUPLA_CONFIG_TYPE_DEFAULT) {
+    return Supla::ApplyConfigResult::NotSupported;
+  }
+  if (result->ConfigSize == 0) {
+    return Supla::ApplyConfigResult::Success;
+  }
+  if (result->ConfigSize != sizeof(TChannelConfig_ActionTrigger)) {
+    return Supla::ApplyConfigResult::DataError;
+  }
+
+  TChannelConfig_ActionTrigger *config =
+      reinterpret_cast<TChannelConfig_ActionTrigger *>(result->Config);
+  Supla::AutoLock lock(SuplaDevice.getTimerAccessMutex());
+  if (runtimeFlags.channelConfigReceived &&
+      lastReceivedActiveActions == config->ActiveActions) {
+    // Preserve an in-flight click/release when the server repeats its
+    // configuration, e.g. after reconnecting. Local callers can still force
+    // a rebuild when button bindings or the channel function change.
+    return Supla::ApplyConfigResult::Success;
+  }
+  lastReceivedActiveActions = config->ActiveActions;
+  runtimeFlags.channelConfigReceived = true;
+  activeActionsFromServer = config->ActiveActions;
+  SUPLA_LOG_DEBUG(
+      "AT[%d] received config with active actions: 0x%X",
+      channel.getChannelNumber(),
+      activeActionsFromServer);
+  rebuildForAttachedButton();
+  // Schedule save in 2 s after state change
+  scheduleStateSave(2000, 0);
+  return Supla::ApplyConfigResult::Success;
+}
+
+bool Supla::Control::ActionTrigger::shouldProcessChannelFunctionFromConfig()
+    const {
+  return false;
 }
 
 void Supla::Control::ActionTrigger::setRelatedChannel(Element *element) {
@@ -339,6 +628,7 @@ void Supla::Control::ActionTrigger::setRelatedChannel(Element &element) {
 void Supla::Control::ActionTrigger::setRelatedChannel(Channel *relatedChannel) {
   if (relatedChannel) {
     channel.setRelatedChannel(relatedChannel->getChannelNumber());
+    synchronizeDirectionalButtonModes();
   }
 }
 
@@ -347,6 +637,39 @@ void Supla::Control::ActionTrigger::setRelatedChannel(Channel &relatedChannel) {
 }
 
 void Supla::Control::ActionTrigger::onInit() {
+  rebuildForAttachedButton();
+}
+
+void Supla::Control::ActionTrigger::rebuildForAttachedButton() {
+  if (!attachedButton) {
+    parseActiveActionsFromServer();
+    return;
+  }
+
+  // Explicit rebuilds and changed masks discard this input's old sequence.
+  // Peer synchronization alone must preserve its pending STOP/click deadline.
+  if (attachedButton->runtimeFlags.conditionalActionsOnClick1) {
+    attachedButton->clickCounter = 0;
+    attachedButton->holdSend = 0;
+  }
+
+  if (attachedButton && runtimeFlags.localHandlerSwitchConfigured &&
+      localHandlerClient) {
+    Supla::LocalAction::DeleteAction(attachedButton,
+                                     localHandlerClient,
+                                     Supla::ON_CLICK_1,
+                                     localHandlerAction);
+  }
+  Supla::LocalAction::DeleteActionsHandledByExcept(
+      this, {Supla::LOCK, Supla::UNLOCK, Supla::TOGGLE_LOCK});
+  localHandlerForEnabledAt = nullptr;
+  localHandlerForDisabledAt = nullptr;
+  localHandlerClient = nullptr;
+  localHandlerAction = 0;
+  runtimeFlags.localHandlerSwitchConfigured = false;
+  disablesLocalOperation = 0;
+  channel.setActionTriggerCaps(0);
+
   // handle automatic switch from on_press, on_release, on_change
   // events to on_click_1 for local actions on relays, roller shutters, etc.
   if (attachedButton) {
@@ -398,27 +721,49 @@ void Supla::Control::ActionTrigger::onInit() {
     }
 
     if (localHandlerForDisabledAt) {
+      localHandlerClient = localHandlerForDisabledAt->client;
+      localHandlerAction = localHandlerForDisabledAt->action;
       attachedButton->addAction(localHandlerForDisabledAt->action,
                                 localHandlerForDisabledAt->client,
                                 Supla::ON_CLICK_1);
       localHandlerForEnabledAt = attachedButton->getHandlerForClient(
           localHandlerForDisabledAt->client, Supla::ON_CLICK_1);
-      localHandlerForEnabledAt->disable();
+      if (localHandlerForEnabledAt) {
+        localHandlerForEnabledAt->disable();
+        runtimeFlags.localHandlerSwitchConfigured = true;
+      } else {
+        localHandlerClient = nullptr;
+        localHandlerAction = 0;
+      }
     }
   }
 
   if (attachedButton) {
     // Configure default actions for bistable button
     if (attachedButton->isBistable()) {
-      if (attachedButton->isEventAlreadyUsed(Supla::ON_PRESS, true) ||
-          attachedButton->isEventAlreadyUsed(Supla::CONDITIONAL_ON_PRESS,
-                                             true)) {
-        disablesLocalOperation |= SUPLA_ACTION_CAP_TURN_ON;
+      for (auto handler = Supla::ActionHandlerClient::begin; handler;
+           handler = handler->next) {
+        if (handler->trigger != attachedButton || handler->isAlwaysEnabled()) {
+          continue;
+        }
+        if (isDirectionalHandler(handler)) {
+          disablesLocalOperation |= SUPLA_ACTION_CAP_TOGGLE_x1;
+        } else if (handler->onEvent == Supla::ON_PRESS ||
+                   handler->onEvent == Supla::CONDITIONAL_ON_PRESS) {
+          disablesLocalOperation |= SUPLA_ACTION_CAP_TURN_ON;
+        } else if (handler->onEvent == Supla::ON_RELEASE ||
+                   handler->onEvent == Supla::CONDITIONAL_ON_RELEASE) {
+          disablesLocalOperation |= SUPLA_ACTION_CAP_TURN_OFF;
+        }
       }
-      if (attachedButton->isEventAlreadyUsed(Supla::ON_RELEASE, true) ||
-          attachedButton->isEventAlreadyUsed(Supla::CONDITIONAL_ON_RELEASE,
-                                             true)) {
-        disablesLocalOperation |= SUPLA_ACTION_CAP_TURN_OFF;
+      // Bistable roller shutters use conditional press/release for one
+      // directional local action pair. Preserve the old bistable behavior:
+      // TOGGLE_x1 must disable both local edges as one local operation.
+      if (attachedButton->isEventAlreadyUsed(
+              Supla::CONDITIONAL_ON_PRESS, true) &&
+          attachedButton->isEventAlreadyUsed(
+              Supla::CONDITIONAL_ON_RELEASE, true)) {
+        disablesLocalOperation |= SUPLA_ACTION_CAP_TOGGLE_x1;
       }
       if (attachedButton->isEventAlreadyUsed(Supla::ON_CLICK_1, true) ||
           attachedButton->isEventAlreadyUsed(Supla::ON_CHANGE, true) ||
@@ -547,27 +892,67 @@ void Supla::Control::ActionTrigger::disableATCapability(uint32_t capToDisable) {
 }
 
 void Supla::Control::ActionTrigger::onSaveState() {
-  if (storageEnabled) {
-    Supla::Storage::WriteState(
-        reinterpret_cast<unsigned char *>(&activeActionsFromServer),
-                             sizeof(activeActionsFromServer));
+  if (!runtimeFlags.storageEnabled) {
+    return;
   }
+
+  ActionTriggerFlags flags = {};
+  auto *weeklySchedule = weeklyScheduleComponents.getController();
+  flags.flags.weeklySchedule =
+      weeklySchedule != nullptr && weeklySchedule->isActive();
+  flags.flags.locked = !flags.flags.weeklySchedule &&
+                       channel.getButtonMode() == SUPLA_BUTTON_MODE_LOCKED;
+
+  uint32_t state = activeActionsFromServer;
+  // 0xFFFFFFFF is a legacy value meaning "all actions". Preserve it when
+  // there is no mode flag to store; otherwise the two reserved bits encode
+  // the current mode.
+  if (state != kActionTriggerLegacyAllActions || flags.rawValue != 0) {
+    state &= ~kActionTriggerStateModeMask;
+    if (flags.flags.weeklySchedule) {
+      state |= kActionTriggerStateWeeklySchedule;
+    } else if (flags.flags.locked) {
+      state |= kActionTriggerStateLocked;
+    }
+  }
+
+  Supla::Storage::WriteState(reinterpret_cast<unsigned char *>(&state),
+                             sizeof(state));
 }
+
 void Supla::Control::ActionTrigger::onLoadConfig(SuplaDeviceClass *sdc) {
   (void)(sdc);
   auto cfg = Supla::Storage::ConfigInstance();
 
-  if (cfg == nullptr) {
-    return;
+  ensureNativeWeeklyScheduleController();
+  if (weeklyScheduleComponents.isAssigned()) {
+    weeklyScheduleComponents.loadConfig();
   }
 
   int32_t value = 0;  // default value
-  char key[SUPLA_CONFIG_MAX_KEY_SIZE] = {};
-  Supla::Config::generateKey(key,
-                             getChannel()->getChannelNumber(),
-                             Supla::ConfigTag::BtnActionTriggerCfgTagPrefix);
-  cfg->getInt32(key, &value);
+  if (cfg != nullptr) {
+    char key[SUPLA_CONFIG_MAX_KEY_SIZE] = {};
+    Supla::Config::generateKey(
+        key,
+        getChannel()->getChannelNumber(),
+        Supla::ConfigTag::BtnActionTriggerCfgTagPrefix);
+    cfg->getInt32(key, &value);
 
+    int32_t localUnlockValue = 0;
+    Supla::Config::generateKey(
+        key,
+        getChannel()->getChannelNumber(),
+        Supla::ConfigTag::BtnActionTriggerLocalUnlockTagPrefix);
+    if (cfg->getInt32(key, &localUnlockValue)) {
+      runtimeFlags.localUnlockAllowed = localUnlockValue != 0;
+    } else {
+      runtimeFlags.localUnlockAllowed = false;
+    }
+    loadConfigChangeFlag();
+  }
+  setLocalUnlockAllowed(runtimeFlags.localUnlockAllowed);
+
+  const auto previousHandlingType = actionHandlingType;
   switch (value) {
     case 0:
     default: {
@@ -590,23 +975,69 @@ void Supla::Control::ActionTrigger::onLoadConfig(SuplaDeviceClass *sdc) {
       break;
     }
   }
+  if (previousHandlingType != actionHandlingType) {
+    runtimeFlags.channelConfigReceived = false;
+  }
 }
 
 void Supla::Control::ActionTrigger::onLoadState() {
-  if (storageEnabled) {
-    Supla::Storage::ReadState((unsigned char *)&activeActionsFromServer,
-        sizeof(activeActionsFromServer));
-    if (activeActionsFromServer) {
-      SUPLA_LOG_INFO(
-          "AT[%d]: restored activeActionsFromServer: 0x%X",
-          channel.getChannelNumber(),
-          activeActionsFromServer);
+  if (!runtimeFlags.storageEnabled) {
+    return;
+  }
+
+  runtimeFlags.channelConfigReceived = false;
+
+  uint32_t state = activeActionsFromServer;
+  const bool stateLoaded = Supla::Storage::ReadState(
+      reinterpret_cast<unsigned char *>(&state), sizeof(state));
+
+  ActionTriggerFlags flags = {};
+  if (!stateLoaded) {
+    return;
+  }
+
+  flags.rawValue = 0;
+  if (state == kActionTriggerLegacyAllActions) {
+    // Keep compatibility with the old all-actions sentinel, which predates
+    // the two mode bits.
+    activeActionsFromServer = state;
+  } else {
+    switch (state & kActionTriggerStateModeMask) {
+      case kActionTriggerStateWeeklySchedule:
+        flags.flags.weeklySchedule = 1;
+        break;
+      case kActionTriggerStateLocked:
+        flags.flags.locked = 1;
+        break;
+      default:
+        break;
     }
+    activeActionsFromServer = state & ~kActionTriggerStateModeMask;
+  }
+
+  if (activeActionsFromServer) {
+    SUPLA_LOG_INFO(
+        "AT[%d]: restored activeActionsFromServer: 0x%X",
+        channel.getChannelNumber(),
+        activeActionsFromServer);
+  }
+
+  auto *weeklySchedule = weeklyScheduleComponents.getController();
+  if (weeklySchedule != nullptr && isWeeklyScheduleSupported()) {
+    weeklySchedule->restoreWeeklyScheduleMode(flags.flags.weeklySchedule);
+    if (weeklySchedule->isExternallyManaged()) {
+      channel.setWeeklyScheduleEnabled(weeklySchedule->isActive());
+      applyButtonMode(SUPLA_BUTTON_MODE_NOT_SET);
+    }
+  }
+  if (!flags.flags.weeklySchedule) {
+    applyButtonMode(flags.flags.locked ? SUPLA_BUTTON_MODE_LOCKED
+                                       : SUPLA_BUTTON_MODE_NOT_SET);
   }
 }
 
 void Supla::Control::ActionTrigger::enableStateStorage() {
-  storageEnabled = true;
+  runtimeFlags.storageEnabled = true;
 }
 
 void Supla::Control::ActionTrigger::addActionToButtonAndDisableIt(int action,
@@ -620,14 +1051,220 @@ bool Supla::Control::ActionTrigger::isAnyActionEnabledOnServer() const {
 }
 
 void Supla::Control::ActionTrigger::setAlwaysUseOnClick1() {
-  alwaysUseOnClick1 = true;
+  runtimeFlags.alwaysUseOnClick1 = true;
+  synchronizeDirectionalButtonModes();
+}
+
+Supla::Control::ActionTrigger &
+Supla::Control::ActionTrigger::setLocalUnlockAllowed(bool allowed) {
+  runtimeFlags.localUnlockAllowed = allowed;
+  if (attachedButton != nullptr) {
+    attachedButton->setActionTriggerModeLocked(
+        channel.getButtonMode() == SUPLA_BUTTON_MODE_LOCKED,
+        runtimeFlags.localUnlockAllowed,
+        runtimeFlags.keepConfigButtonTriggerAlwaysAvailable);
+  }
+  return *this;
+}
+
+bool Supla::Control::ActionTrigger::isLocalUnlockAllowed() const {
+  return runtimeFlags.localUnlockAllowed;
+}
+
+Supla::Control::ActionTrigger &
+Supla::Control::ActionTrigger::setKeepConfigButtonTriggerAlwaysAvailable(
+    bool keep) {
+  runtimeFlags.keepConfigButtonTriggerAlwaysAvailable = keep;
+  if (attachedButton != nullptr) {
+    attachedButton->setActionTriggerModeLocked(
+        channel.getButtonMode() == SUPLA_BUTTON_MODE_LOCKED,
+        runtimeFlags.localUnlockAllowed,
+        runtimeFlags.keepConfigButtonTriggerAlwaysAvailable);
+  }
+  return *this;
+}
+
+bool Supla::Control::ActionTrigger::
+    keepsConfigButtonTriggerAlwaysAvailable() const {
+  return runtimeFlags.keepConfigButtonTriggerAlwaysAvailable;
 }
 
 void Supla::Control::ActionTrigger::enable() {
-  enabled = true;
+  runtimeFlags.enabled = true;
 }
 
 void Supla::Control::ActionTrigger::disable() {
-  enabled = false;
+  runtimeFlags.enabled = false;
 }
 
+bool Supla::Control::ActionTrigger::setWeeklyScheduleController(
+    WeeklyScheduleController *controller,
+    WeeklyScheduleConfigHandler *configHandler,
+    WeeklyScheduleProgramSource *programSource) {
+  if (!weeklyScheduleComponents.set(
+          controller, configHandler, programSource)) {
+    return false;
+  }
+  runtimeFlags.weeklyScheduleAvailable = true;
+  updateWeeklyScheduleCapabilities();
+  return true;
+}
+
+bool Supla::Control::ActionTrigger::ensureNativeWeeklyScheduleController() {
+  if (!runtimeFlags.weeklyScheduleAvailable ||
+      weeklyScheduleComponents.isAssigned()) {
+    return false;
+  }
+  auto *weeklySchedule = new ActionTriggerWeeklySchedule(this);
+  if (!setWeeklyScheduleController(
+          weeklySchedule, weeklySchedule, weeklySchedule)) {
+    delete weeklySchedule;
+    return false;
+  }
+  return true;
+}
+
+void Supla::Control::ActionTrigger::updateWeeklyScheduleCapabilities() {
+  channel.setFlag(SUPLA_CHANNEL_FLAG_BUTTON_MODE_SUPPORTED);
+  auto *controller = weeklyScheduleComponents.getController();
+  auto *configHandler = weeklyScheduleComponents.getConfigHandler();
+  bool configurable =
+      runtimeFlags.weeklyScheduleAvailable && configHandler != nullptr &&
+      configHandler->supportsConfigType(SUPLA_CONFIG_TYPE_WEEKLY_SCHEDULE);
+  if (configurable) {
+    channel.setFlag(SUPLA_CHANNEL_FLAG_WEEKLY_SCHEDULE);
+    usedConfigTypes.set(SUPLA_CONFIG_TYPE_WEEKLY_SCHEDULE);
+  } else {
+    channel.unsetFlag(SUPLA_CHANNEL_FLAG_WEEKLY_SCHEDULE);
+    usedConfigTypes.clear(SUPLA_CONFIG_TYPE_WEEKLY_SCHEDULE);
+  }
+  if (!runtimeFlags.weeklyScheduleAvailable && controller != nullptr) {
+    controller->switchToManualMode();
+  }
+}
+
+bool Supla::Control::ActionTrigger::isWeeklyScheduleSupported() const {
+  return runtimeFlags.weeklyScheduleAvailable;
+}
+
+Supla::Control::ActionTrigger &
+Supla::Control::ActionTrigger::setWeeklyScheduleAvailable(bool available) {
+  runtimeFlags.weeklyScheduleAvailable = available;
+  if (available) {
+    ensureNativeWeeklyScheduleController();
+  }
+  updateWeeklyScheduleCapabilities();
+  return *this;
+}
+
+void Supla::Control::ActionTrigger::fillDefaultWeeklySchedule(
+    TChannelConfig_WeeklySchedule *schedule) {
+  if (schedule == nullptr) {
+    return;
+  }
+
+  schedule->Program[0].Mode = SUPLA_BUTTON_MODE_NOT_SET;
+  schedule->Program[1].Mode = SUPLA_BUTTON_MODE_LOCKED;
+}
+
+bool Supla::Control::ActionTrigger::isWeeklyScheduleProgramModeSupported(
+    uint8_t mode) const {
+  return mode == SUPLA_BUTTON_MODE_NOT_SET ||
+         mode == SUPLA_BUTTON_MODE_LOCKED;
+}
+
+void Supla::Control::ActionTrigger::iterateAlways() {
+  auto *weeklySchedule = weeklyScheduleComponents.getController();
+  if (weeklySchedule != nullptr && isWeeklyScheduleSupported()) {
+    weeklySchedule->processWeeklySchedule();
+  }
+}
+
+int32_t Supla::Control::ActionTrigger::handleNewValueFromServer(
+    TSD_SuplaChannelNewValue *newValue) {
+  if (newValue == nullptr) {
+    return -1;
+  }
+  auto *properties =
+      reinterpret_cast<TActionTriggerProperties *>(newValue->value);
+  auto *weeklySchedule = weeklyScheduleComponents.getController();
+  switch (properties->ButtonMode) {
+    case SUPLA_BUTTON_MODE_LOCKED:
+    case SUPLA_BUTTON_MODE_NOT_SET: {
+      applyManualButtonMode(properties->ButtonMode);
+      return 1;
+    }
+    case SUPLA_BUTTON_MODE_CMD_SWITCH_TO_MANUAL: {
+      applyManualButtonMode(SUPLA_BUTTON_MODE_NOT_SET);
+      return 1;
+    }
+    case SUPLA_BUTTON_MODE_CMD_WEEKLY_SCHEDULE: {
+      if (weeklySchedule != nullptr && isWeeklyScheduleSupported() &&
+          weeklySchedule->switchToWeeklySchedule()) {
+        if (weeklySchedule->isExternallyManaged()) {
+          channel.setWeeklyScheduleEnabled(weeklySchedule->isActive());
+          applyButtonMode(SUPLA_BUTTON_MODE_NOT_SET);
+        }
+        scheduleStateSave();
+        return 1;
+      }
+      return 0;
+    }
+    default: {
+      return -1;
+    }
+  }
+}
+
+void Supla::Control::ActionTrigger::fillChannelConfig(
+    void *channelConfig, int *size, uint8_t configType) {
+  if (size == nullptr) {
+    return;
+  }
+  *size = 0;
+  if (channelConfig == nullptr ||
+      configType != SUPLA_CONFIG_TYPE_WEEKLY_SCHEDULE) {
+    return;
+  }
+  ensureNativeWeeklyScheduleController();
+  updateWeeklyScheduleCapabilities();
+  auto *configHandler = weeklyScheduleComponents.getConfigHandler();
+  if (configHandler != nullptr && isWeeklyScheduleSupported()) {
+    configHandler->fillChannelConfig(channelConfig, size, configType);
+  }
+}
+
+void Supla::Control::ActionTrigger::purgeConfig() {
+  ElementWithChannelActions::purgeConfig();
+  auto *configHandler = weeklyScheduleComponents.getConfigHandler();
+  if (configHandler != nullptr) {
+    configHandler->purgeConfig();
+  }
+}
+
+void Supla::Control::ActionTrigger::applyButtonMode(uint8_t mode) {
+  channel.setButtonMode(mode);
+  if (attachedButton != nullptr) {
+    attachedButton->setActionTriggerModeLocked(
+        mode == SUPLA_BUTTON_MODE_LOCKED,
+        runtimeFlags.localUnlockAllowed,
+        runtimeFlags.keepConfigButtonTriggerAlwaysAvailable);
+  }
+}
+
+void Supla::Control::ActionTrigger::applyManualButtonMode(uint8_t mode) {
+  auto *weeklySchedule = weeklyScheduleComponents.getController();
+  if (weeklySchedule != nullptr) {
+    weeklySchedule->switchToManualMode();
+  }
+  channel.setWeeklyScheduleEnabled(false);
+  applyButtonMode(mode);
+  scheduleStateSave();
+}
+
+void Supla::Control::ActionTrigger::scheduleStateSave(uint32_t delayMsMax,
+                                                       uint32_t delayMsMin) {
+  if (runtimeFlags.storageEnabled) {
+    Supla::Storage::ScheduleSave(delayMsMax, delayMsMin);
+  }
+}

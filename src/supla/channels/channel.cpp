@@ -1,18 +1,5 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "channel.h"
 
@@ -36,6 +23,24 @@ using Supla::Channel;
 
 Channel *Channel::firstPtr = nullptr;
 int Channel::startingChannelNumber = 0;
+
+namespace {
+
+void logRelayChannelValue(int channelNumber, const char *reason,
+                          const TRelayChannel_Value *relay) {
+  SUPLA_LOG_INFO(
+      "Channel[%d] relay %s: value=%u mode=%u flags=0x%04X "
+      "forced_on=%d forced_off=%d weekly=%d overcurrent_cutoff=%d",
+      channelNumber, reason, static_cast<unsigned char>(relay->hi),
+      relay->RelayMode, relay->flags,
+      relay->RelayMode == SUPLA_RELAY_MODE_FORCED_ON,
+      relay->RelayMode == SUPLA_RELAY_MODE_FORCED_OFF,
+      (relay->flags & SUPLA_RELAY_FLAG_WEEKLY_SCHEDULE_ENABLED) != 0,
+      (relay->flags & SUPLA_RELAY_FLAG_OVERCURRENT_RELAY_OFF) != 0);
+}
+
+}  // namespace
+
 
 #ifdef SUPLA_TEST
 // Method used in tests to restore default values for static members
@@ -128,7 +133,8 @@ Channel *Channel::next() {
 bool Channel::setChannelNumber(int newChannelNumber) {
   int oldChannelNumber = channelNumber;
 
-  if (newChannelNumber < 0 || oldChannelNumber < 0) {
+  if (newChannelNumber < 0 || newChannelNumber >= SUPLA_CHANNELMAXCOUNT ||
+      oldChannelNumber < 0) {
     return false;
   }
   if (newChannelNumber == oldChannelNumber) {
@@ -174,8 +180,13 @@ void Channel::setNewValue(double dbl) {
     if (isnan(dbl)) {
       SUPLA_LOG_DEBUG("Channel(%d) value changed to NaN", channelNumber);
     } else {
-      SUPLA_LOG_DEBUG("Channel(%d) value changed to %d.%02d", channelNumber,
-          static_cast<int>(dbl), abs(static_cast<int>(dbl*100)%100));
+      int integerPart = static_cast<int>(dbl);
+      int fractionalPart = abs(static_cast<int>(dbl * 100) % 100);
+      const char *sign = dbl < 0 && integerPart == 0 ? "-" : "";
+      (void)(fractionalPart);
+      (void)(sign);
+      SUPLA_LOG_DEBUG("Channel(%d) value changed to %s%d.%02d", channelNumber,
+          sign, integerPart, fractionalPart);
     }
   }
 }
@@ -308,6 +319,10 @@ void Channel::setNewValue(
 bool Channel::setNewValue(const char *newValue) {
   if (memcmp(value, newValue, SUPLA_CHANNELVALUE_SIZE) != 0) {
     memcpy(value, newValue, SUPLA_CHANNELVALUE_SIZE);
+    if (channelType == ChannelType::RELAY) {
+      logRelayChannelValue(channelNumber, "value changed",
+          reinterpret_cast<const TRelayChannel_Value *>(value));
+    }
     setSendValue();
     return true;
   }
@@ -433,6 +448,10 @@ bool Channel::isStateInfoUpdateReady() const {
 
 void Channel::sendUpdate() {
   if (isValueUpdateReady()) {
+    if (channelType == ChannelType::RELAY) {
+      logRelayChannelValue(channelNumber, "sending update",
+          reinterpret_cast<const TRelayChannel_Value *>(value));
+    }
     clearSendValue();
     for (auto proto = Supla::Protocol::ProtocolLayer::first();
         proto != nullptr; proto = proto->next()) {
@@ -753,8 +772,24 @@ void Channel::setValidityTimeSec(uint32_t timeSec) {
   validityTimeSec = timeSec;
 }
 
-bool Channel::isSleepingEnabled() {
+void Channel::clearValue() {
+  const int8_t emptyValue[SUPLA_CHANNELVALUE_SIZE] = {};
+  const bool valueChanged =
+      memcmp(value, emptyValue, SUPLA_CHANNELVALUE_SIZE) != 0;
+  const bool validityChanged = validityTimeSec != 0;
+  memcpy(value, emptyValue, SUPLA_CHANNELVALUE_SIZE);
+  validityTimeSec = 0;
+  if (valueChanged || validityChanged) {
+    setSendValue();
+  }
+}
+
+bool Channel::isSleepingEnabled() const {
   return validityTimeSec > 0;
+}
+
+uint32_t Channel::getValidityTimeSec() const {
+  return validityTimeSec;
 }
 
 bool Channel::isWeeklyScheduleAvailable() {
@@ -791,7 +826,7 @@ void Channel::setBatteryPowered(bool value) {
 }
 
 void Channel::setBatteryLevel(int level) {
-  if ((level >= 0 && level <= 100) || (level == 255)) {
+  if (level >= 0 && level <= 100) {
     if (level != batteryLevel) {
       SUPLA_LOG_DEBUG(
           "Channel[%d] battery level changed to %d", channelNumber, level);
@@ -799,6 +834,29 @@ void Channel::setBatteryLevel(int level) {
       setSendStateInfo();
     }
   }
+}
+
+Supla::BatteryState Channel::getBatteryState() const {
+  return batteryState;
+}
+
+void Channel::setBatteryState(BatteryState state, bool applyToWholeDevice) {
+  if (state == BatteryState::NotSet) {
+    applyToWholeDevice = false;
+  }
+
+  if (state != batteryState ||
+      applyToWholeDevice != batteryStateAppliedToWholeDevice) {
+    SUPLA_LOG_DEBUG("Channel[%d] battery state changed to %u", channelNumber,
+                    static_cast<unsigned>(state));
+    batteryState = state;
+    batteryStateAppliedToWholeDevice = applyToWholeDevice;
+    setSendStateInfo();
+  }
+}
+
+bool Channel::isBatteryStateAppliedToWholeDevice() const {
+  return batteryStateAppliedToWholeDevice;
 }
 
 uint8_t Channel::getBridgeSignalStrength() const {
@@ -1555,31 +1613,6 @@ void Channel::fillDeviceChannelStruct(
   deviceChannelStruct->ValueValidityTimeSec = validityTimeSec;
   deviceChannelStruct->DefaultIcon = getDefaultIcon();
   memcpy(deviceChannelStruct->value, value, SUPLA_CHANNELVALUE_SIZE);
-  // on some ESP platforms, printf functions for 64 bits is not available
-  // so we have to print it as two separate 32 bit values 0x%X%08X
-  SUPLA_LOG_VERBOSE(
-      "CH[%i], type: %d, FuncList: 0x%X, function: %d, flags: 0x%X%08X, "
-      "%s, validityTimeSec: %d, icon: %d, "
-      "value: "
-      "[%02x %02x %02x %02x %02x %02x %02x %02x]",
-      getChannelNumber(),
-      getChannelType(),
-      getFuncList(),
-      getDefaultFunction(),
-      PRINTF_UINT64_HEX(getFlags()),
-      state == 0   ? "online"
-      : state == 1 ? "offline"
-                   : "online (not available)",
-      validityTimeSec,
-      getDefaultIcon(),
-      static_cast<uint8_t>(value[0]),
-      static_cast<uint8_t>(value[1]),
-      static_cast<uint8_t>(value[2]),
-      static_cast<uint8_t>(value[3]),
-      static_cast<uint8_t>(value[4]),
-      static_cast<uint8_t>(value[5]),
-      static_cast<uint8_t>(value[6]),
-      static_cast<uint8_t>(value[7]));
 }
 
 void Channel::fillDeviceChannelStruct(
@@ -1603,36 +1636,6 @@ void Channel::fillDeviceChannelStruct(
   deviceChannelStruct->DefaultIcon = getDefaultIcon();
   deviceChannelStruct->SubDeviceId = getSubDeviceId();
   memcpy(deviceChannelStruct->value, value, SUPLA_CHANNELVALUE_SIZE);
-  // uint64_t printf is crashing on ESP32-C2 in method vnsnprintf
-  SUPLA_LOG_VERBOSE(
-      "CH[%i], subDevId: %d, type: %d, FuncList: 0x%X, function: %d, flags: "
-      "0x%X%08X, %s, validityTimeSec: %d, icon: %d, value: "
-      "[%02x %02x %02x %02x %02x %02x %02x %02x]",
-      getChannelNumber(),
-      getSubDeviceId(),
-      getChannelType(),
-      getFuncList(),
-      getDefaultFunction(),
-      PRINTF_UINT64_HEX(getFlags()),
-      state == SUPLA_CHANNEL_OFFLINE_FLAG_ONLINE    ? "online"
-      : state == SUPLA_CHANNEL_OFFLINE_FLAG_OFFLINE ? "offline"
-      : state == SUPLA_CHANNEL_OFFLINE_FLAG_ONLINE_BUT_NOT_AVAILABLE
-          ? "online (not available)"
-      : state == SUPLA_CHANNEL_OFFLINE_FLAG_OFFLINE_REMOTE_WAKEUP_NOT_SUPPORTED
-          ? "offline (remote wakeup not supported)"
-      : state == SUPLA_CHANNEL_OFFLINE_FLAG_FIRMWARE_UPDATE_ONGOING
-          ? "firmware update ongoing"
-          : "UNKNOWN",
-      validityTimeSec,
-      getDefaultIcon(),
-      static_cast<uint8_t>(value[0]),
-      static_cast<uint8_t>(value[1]),
-      static_cast<uint8_t>(value[2]),
-      static_cast<uint8_t>(value[3]),
-      static_cast<uint8_t>(value[4]),
-      static_cast<uint8_t>(value[5]),
-      static_cast<uint8_t>(value[6]),
-      static_cast<uint8_t>(value[7]));
 }
 
 void Channel::fillRawValue(void *valueToFill) {
@@ -1681,55 +1684,55 @@ bool Channel::isFunctionValid(uint32_t function) const {
     case ChannelType::RELAY: {
       switch (function) {
         case SUPLA_CHANNELFNC_CONTROLLINGTHEGATEWAYLOCK: {
-          return getFuncList() & SUPLA_CHANNELFNC_CONTROLLINGTHEGATEWAYLOCK;
+          return getFuncList() & SUPLA_BIT_FUNC_CONTROLLINGTHEGATEWAYLOCK;
         }
         case SUPLA_CHANNELFNC_CONTROLLINGTHEGATE: {
-          return getFuncList() & SUPLA_CHANNELFNC_CONTROLLINGTHEGATE;
+          return getFuncList() & SUPLA_BIT_FUNC_CONTROLLINGTHEGATE;
         }
         case SUPLA_CHANNELFNC_CONTROLLINGTHEGARAGEDOOR: {
-          return getFuncList() & SUPLA_CHANNELFNC_CONTROLLINGTHEGARAGEDOOR;
+          return getFuncList() & SUPLA_BIT_FUNC_CONTROLLINGTHEGARAGEDOOR;
         }
         case SUPLA_CHANNELFNC_CONTROLLINGTHEDOORLOCK: {
-          return getFuncList() & SUPLA_CHANNELFNC_CONTROLLINGTHEDOORLOCK;
+          return getFuncList() & SUPLA_BIT_FUNC_CONTROLLINGTHEDOORLOCK;
         }
         case SUPLA_CHANNELFNC_CONTROLLINGTHEROLLERSHUTTER: {
-          return getFuncList() & SUPLA_CHANNELFNC_CONTROLLINGTHEROLLERSHUTTER;
+          return getFuncList() & SUPLA_BIT_FUNC_CONTROLLINGTHEROLLERSHUTTER;
         }
         case SUPLA_CHANNELFNC_CONTROLLINGTHEROOFWINDOW: {
-          return getFuncList() & SUPLA_CHANNELFNC_CONTROLLINGTHEROOFWINDOW;
+          return getFuncList() & SUPLA_BIT_FUNC_CONTROLLINGTHEROOFWINDOW;
         }
         case SUPLA_CHANNELFNC_POWERSWITCH: {
-          return getFuncList() & SUPLA_CHANNELFNC_POWERSWITCH;
+          return getFuncList() & SUPLA_BIT_FUNC_POWERSWITCH;
         }
         case SUPLA_CHANNELFNC_LIGHTSWITCH: {
-          return getFuncList() & SUPLA_CHANNELFNC_LIGHTSWITCH;
+          return getFuncList() & SUPLA_BIT_FUNC_LIGHTSWITCH;
         }
         case SUPLA_CHANNELFNC_STAIRCASETIMER: {
-          return getFuncList() & SUPLA_CHANNELFNC_STAIRCASETIMER;
+          return getFuncList() & SUPLA_BIT_FUNC_STAIRCASETIMER;
         }
         case SUPLA_CHANNELFNC_CONTROLLINGTHEFACADEBLIND: {
-          return getFuncList() & SUPLA_CHANNELFNC_CONTROLLINGTHEFACADEBLIND;
+          return getFuncList() & SUPLA_BIT_FUNC_CONTROLLINGTHEFACADEBLIND;
         }
         case SUPLA_CHANNELFNC_TERRACE_AWNING: {
-          return getFuncList() & SUPLA_CHANNELFNC_TERRACE_AWNING;
+          return getFuncList() & SUPLA_BIT_FUNC_TERRACE_AWNING;
         }
         case SUPLA_CHANNELFNC_PROJECTOR_SCREEN: {
-          return getFuncList() & SUPLA_CHANNELFNC_PROJECTOR_SCREEN;
+          return getFuncList() & SUPLA_BIT_FUNC_PROJECTOR_SCREEN;
         }
         case SUPLA_CHANNELFNC_CURTAIN: {
-          return getFuncList() & SUPLA_CHANNELFNC_CURTAIN;
+          return getFuncList() & SUPLA_BIT_FUNC_CURTAIN;
         }
         case SUPLA_CHANNELFNC_VERTICAL_BLIND: {
-          return getFuncList() & SUPLA_CHANNELFNC_VERTICAL_BLIND;
+          return getFuncList() & SUPLA_BIT_FUNC_VERTICAL_BLIND;
         }
         case SUPLA_CHANNELFNC_ROLLER_GARAGE_DOOR: {
-          return getFuncList() & SUPLA_CHANNELFNC_ROLLER_GARAGE_DOOR;
+          return getFuncList() & SUPLA_BIT_FUNC_ROLLER_GARAGE_DOOR;
         }
         case SUPLA_CHANNELFNC_PUMPSWITCH: {
-          return getFuncList() & SUPLA_CHANNELFNC_PUMPSWITCH;
+          return getFuncList() & SUPLA_BIT_FUNC_PUMPSWITCH;
         }
         case SUPLA_CHANNELFNC_HEATORCOLDSOURCESWITCH: {
-          return getFuncList() & SUPLA_CHANNELFNC_HEATORCOLDSOURCESWITCH;
+          return getFuncList() & SUPLA_BIT_FUNC_HEATORCOLDSOURCESWITCH;
         }
         default: {
           return false;
@@ -2057,6 +2060,7 @@ void Channel::setRelayOvercurrentCutOff(bool overcurrent) {
         overcurrent) {
       relay->flags = (relay->flags & ~SUPLA_RELAY_FLAG_OVERCURRENT_RELAY_OFF) |
                      (overcurrent ? SUPLA_RELAY_FLAG_OVERCURRENT_RELAY_OFF : 0);
+      logRelayChannelValue(channelNumber, "overcurrent flag changed", relay);
       setSendValue();
     }
   }
@@ -2066,6 +2070,50 @@ bool Channel::isRelayOvercurrentCutOff() const {
   if (channelType == ChannelType::RELAY) {
     auto relay = reinterpret_cast<const TRelayChannel_Value *>(value);
     return relay->flags & SUPLA_RELAY_FLAG_OVERCURRENT_RELAY_OFF;
+  }
+  return false;
+}
+
+void Channel::setRelayMode(uint8_t mode) {
+  if (channelType != ChannelType::RELAY) {
+    return;
+  }
+  auto relay = reinterpret_cast<TRelayChannel_Value *>(value);
+  if (relay->RelayMode == mode) {
+    return;
+  }
+  relay->RelayMode = mode;
+  logRelayChannelValue(channelNumber, "mode changed", relay);
+  setSendValue();
+}
+
+uint8_t Channel::getRelayMode() const {
+  if (channelType == ChannelType::RELAY) {
+    auto relay = reinterpret_cast<const TRelayChannel_Value *>(value);
+    return relay->RelayMode;
+  }
+  return SUPLA_RELAY_MODE_NOT_SET;
+}
+
+void Channel::setRelayWeeklyScheduleEnabled(bool enabled) {
+  if (channelType != ChannelType::RELAY) {
+    return;
+  }
+  auto relay = reinterpret_cast<TRelayChannel_Value *>(value);
+  bool current = (relay->flags & SUPLA_RELAY_FLAG_WEEKLY_SCHEDULE_ENABLED) != 0;
+  if (current == enabled) {
+    return;
+  }
+  relay->flags = (relay->flags & ~SUPLA_RELAY_FLAG_WEEKLY_SCHEDULE_ENABLED) |
+                 (enabled ? SUPLA_RELAY_FLAG_WEEKLY_SCHEDULE_ENABLED : 0);
+  logRelayChannelValue(channelNumber, "weekly flag changed", relay);
+  setSendValue();
+}
+
+bool Channel::isRelayWeeklyScheduleEnabled() const {
+  if (channelType == ChannelType::RELAY) {
+    auto relay = reinterpret_cast<const TRelayChannel_Value *>(value);
+    return relay->flags & SUPLA_RELAY_FLAG_WEEKLY_SCHEDULE_ENABLED;
   }
   return false;
 }

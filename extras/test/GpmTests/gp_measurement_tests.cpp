@@ -1,20 +1,5 @@
-/*
-   Copyright (C) AC SOFTWARE SP. Z O.O
-
-   This program is free software; you can redistribute it and/or
-   modify it under the terms of the GNU General Public License
-   as published by the Free Software Foundation; either version 2
-   of the License, or (at your option) any later version.
-
-   This program is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
-
-   You should have received a copy of the GNU General Public License
-   along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <arduino_mock.h>
 #include <gtest/gtest.h>
@@ -407,6 +392,8 @@ TEST_F(GpMeasurementTestsFixture, defaultParametersShouldntOverwriteConfig) {
   EXPECT_CALL(config, init());
 
   EXPECT_CALL(config, saveWithDelay(_)).Times(0);
+  EXPECT_CALL(config, getUInt32(StrEq("0_cfg_chng_t"), _))
+      .WillOnce(Return(false));
   EXPECT_CALL(
       config,
       getBlob(
@@ -624,7 +611,7 @@ TEST_F(GpMeasurementTestsFixture, localConfigChangeShouldBeSavedAndSend) {
       .Times(1)
       .WillOnce(Return(
           sizeof(Supla::Sensor::GeneralPurposeChannelBase::GPMCommonConfig)));
-  EXPECT_CALL(cfg, setUInt8(StrEq("0_cfg_chng"), 1))
+  EXPECT_CALL(cfg, setUInt32(StrEq("0_cfg_chng_t"), 1))
       .Times(1)
       .WillOnce(Return(1));
 

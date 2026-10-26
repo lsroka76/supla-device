@@ -1,20 +1,5 @@
-/*
-   Copyright (C) AC SOFTWARE SP. Z O.O
-
-   This program is free software; you can redistribute it and/or
-   modify it under the terms of the GNU General Public License
-   as published by the Free Software Foundation; either version 2
-   of the License, or (at your option) any later version.
-
-   This program is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
-
-   You should have received a copy of the GNU General Public License
-   along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <config_mock.h>
 #include <gmock/gmock.h>
@@ -55,6 +40,10 @@ class HvacAuxTestsF : public ::testing::Test {
   void SetUp() override {
     Supla::Channel::resetToDefaults();
     EXPECT_CALL(cfg, init());
+    EXPECT_CALL(cfg, getUInt32(StrEq("0_cfg_chng_t"), _))
+        .WillRepeatedly(Return(false));
+    EXPECT_CALL(cfg, setUInt32(StrEq("0_cfg_chng_t"), _))
+        .WillRepeatedly(Return(false));
 
     hvac = new Supla::Control::HvacBase(&primaryOutput);
     t1 = new Supla::Sensor::VirtualThermometer();
@@ -130,8 +119,7 @@ TEST_F(HvacAuxTestsF, auxHysteresisMaxCheck) {
       cfg,
       getBlob(
           StrEq("0_hvac_weekly"), _, sizeof(TChannelConfig_WeeklySchedule)))
-      .Times(1)
-      .WillOnce(Return(false));
+      .Times(0);
   EXPECT_CALL(cfg,
               setInt32(StrEq("0_fnc"), SUPLA_CHANNELFNC_HVAC_THERMOSTAT))
       .Times(1)
@@ -408,8 +396,7 @@ TEST_F(HvacAuxTestsF, auxHysteresisMinCheck) {
       cfg,
       getBlob(
           StrEq("0_hvac_weekly"), _, sizeof(TChannelConfig_WeeklySchedule)))
-      .Times(1)
-      .WillOnce(Return(false));
+      .Times(0);
   EXPECT_CALL(cfg,
               setInt32(StrEq("0_fnc"), SUPLA_CHANNELFNC_HVAC_THERMOSTAT))
       .Times(1)
@@ -613,8 +600,7 @@ TEST_F(HvacAuxTestsF, auxHysteresisMaxCoolinCheck) {
       cfg,
       getBlob(
           StrEq("0_hvac_weekly"), _, sizeof(TChannelConfig_WeeklySchedule)))
-      .Times(1)
-      .WillOnce(Return(false));
+      .Times(0);
   EXPECT_CALL(cfg,
               setInt32(StrEq("0_fnc"), SUPLA_CHANNELFNC_HVAC_THERMOSTAT))
       .Times(1)
@@ -866,8 +852,7 @@ TEST_F(HvacAuxTestsF, auxHysteresisMinCoolinCheck) {
       cfg,
       getBlob(
           StrEq("0_hvac_weekly"), _, sizeof(TChannelConfig_WeeklySchedule)))
-      .Times(1)
-      .WillOnce(Return(false));
+      .Times(0);
   EXPECT_CALL(cfg,
               setInt32(StrEq("0_fnc"), SUPLA_CHANNELFNC_HVAC_THERMOSTAT))
       .Times(1)
@@ -1076,4 +1061,3 @@ TEST_F(HvacAuxTestsF, auxHysteresisMinCoolinCheck) {
   t2->setValue(15.41);
   moveTime(100);
 }
-

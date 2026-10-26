@@ -1,20 +1,5 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
-
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
-
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #ifndef ARDUINO_ARCH_AVR
 
@@ -24,6 +9,7 @@
 #include <time.h>
 #include <inttypes.h>
 #include <supla/log_wrapper.h>
+#include <supla/network/web_server.h>
 
 #include "web_sender.h"
 
@@ -67,6 +53,17 @@ HtmlTag& HtmlTag::attr(const char* name, const char* value) {
     sender_->send(name);
     sender_->send("=\"");
     sender_->sendSafe(value ? value : "");
+    sender_->send("\"");
+  }
+  return *this;
+}
+
+HtmlTag& HtmlTag::attrStatic(const char* name, const char* value, size_t size) {
+  if (!finished_ && sender_ && name) {
+    sender_->send(" ");
+    sender_->send(name);
+    sender_->send("=\"");
+    sender_->sendStatic(value, size, true);
     sender_->send("\"");
   }
   return *this;
@@ -149,6 +146,41 @@ void HtmlTag::release() {
 
 WebSender::~WebSender() {}
 
+void WebSender::sendStatic(const char* data, size_t size, bool escape) {
+  if (data == nullptr || size == 0) {
+    return;
+  }
+
+#if defined(ARDUINO_ARCH_ESP8266)
+  if (size == static_cast<size_t>(-1)) {
+    size = strlen_P(data);
+  }
+  char buffer[128];
+  size_t offset = 0;
+  while (offset < size) {
+    const size_t chunk = size - offset < sizeof(buffer)
+                             ? size - offset
+                             : sizeof(buffer);
+    memcpy_P(buffer, data + offset, chunk);
+    if (escape) {
+      sendSafe(buffer, static_cast<int>(chunk));
+    } else {
+      send(buffer, static_cast<int>(chunk));
+    }
+    offset += chunk;
+  }
+#else
+  if (size == static_cast<size_t>(-1)) {
+    size = strlen(data);
+  }
+  if (escape) {
+    sendSafe(data, static_cast<int>(size));
+  } else {
+    send(data, static_cast<int>(size));
+  }
+#endif
+}
+
 void WebSender::labelFor(const char* id, const char* text) {
   auto label = tag("label");
   label.attr("for", id ? id : "");
@@ -158,7 +190,10 @@ void WebSender::labelFor(const char* id, const char* text) {
 void WebSender::textInput(const char* name,
                           const char* id,
                           const char* value,
-                          int maxLength) {
+                          int maxLength,
+                          const char* listId,
+                          const char* onInput,
+                          const char* onChange) {
   auto input = voidTag("input");
   input.attr("type", "text");
   if (maxLength >= 0) {
@@ -172,6 +207,15 @@ void WebSender::textInput(const char* name,
   }
   if (value) {
     input.attr("value", value);
+  }
+  if (listId) {
+    input.attr("list", listId);
+  }
+  if (onInput) {
+    input.attr("oninput", onInput);
+  }
+  if (onChange) {
+    input.attr("onchange", onChange);
   }
   input.finish();
 }
@@ -319,7 +363,7 @@ void WebSender::send(int number) {
     SUPLA_LOG_WARNING("WebSender error - snprintf failed");
     return;
   }
-  if (static_cast<size_t>(size) > sizeof(buf)) {
+  if (static_cast<size_t>(size) >= sizeof(buf)) {
     SUPLA_LOG_WARNING("WebSender error - buffer too small");
     return;
   }
@@ -346,7 +390,7 @@ void WebSender::send(int number, int precision) {
     SUPLA_LOG_WARNING("WebSender error - snprintf failed");
     return;
   }
-  if (static_cast<size_t>(size) > sizeof(buf)) {
+  if (static_cast<size_t>(size) >= sizeof(buf)) {
     SUPLA_LOG_WARNING("WebSender error - buffer too small");
     return;
   }
@@ -361,7 +405,7 @@ void WebSender::sendNameAndId(const char *id) {
     SUPLA_LOG_WARNING("WebSender error - snprintf failed");
     return;
   }
-  if (static_cast<size_t>(size) > sizeof(buf)) {
+  if (static_cast<size_t>(size) >= sizeof(buf)) {
     SUPLA_LOG_WARNING("WebSender error - buffer too small");
     return;
   }
@@ -369,24 +413,17 @@ void WebSender::sendNameAndId(const char *id) {
 }
 
 void WebSender::sendLabelFor(const char *id, const char *label) {
-  char buf[300];
-  int size = snprintf(buf,
-                      sizeof(buf),
-                      "<label for=\"%s\">%s</label>",
-                      id ? id : "",
-                      label ? label : "");
-  if (size < 0) {
-    SUPLA_LOG_WARNING("WebSender error - snprintf failed");
-    return;
-  }
-  if (static_cast<size_t>(size) > sizeof(buf)) {
-    SUPLA_LOG_WARNING("WebSender error - buffer too small");
-    return;
-  }
-  send(buf);
+  send("<label for=\"");
+  sendSafe(id ? id : "");
+  send("\">");
+  sendSafe(label ? label : "");
+  send("</label>");
 }
 
 void WebSender::sendSafe(const char *buf, int size) {
+  if (buf == nullptr) {
+    return;
+  }
   if (size == -1) {
     size = strnlen(buf, 8000);
   }
@@ -429,30 +466,56 @@ void WebSender::sendSelectItem(int value,
                                bool selected,
                                bool emptyValue) {
   char buf[100];
-  int size = 0;
   if (emptyValue) {
-    size = snprintf(buf,
-                    sizeof(buf),
-                    "<option value=\"\" %s>%s</option>",
-                    selected ? "selected" : "",
-                    label);
+    int size = snprintf(buf,
+                        sizeof(buf),
+                        "<option value=\"\" %s>",
+                        selected ? "selected" : "");
+    if (size < 0) {
+      SUPLA_LOG_WARNING("WebSender error - snprintf failed");
+      return;
+    }
+    if (static_cast<size_t>(size) >= sizeof(buf)) {
+      SUPLA_LOG_WARNING("WebSender error - buffer too small");
+      return;
+    }
+    send(buf);
   } else {
-    size = snprintf(buf,
-                    sizeof(buf),
-                    "<option value=\"%d\" %s>%s</option>",
-                    value,
-                    selected ? "selected" : "",
-                    label);
+    int size = snprintf(buf,
+                        sizeof(buf),
+                        "<option value=\"%d\" %s>",
+                        value,
+                        selected ? "selected" : "");
+    if (size < 0) {
+      SUPLA_LOG_WARNING("WebSender error - snprintf failed");
+      return;
+    }
+    if (static_cast<size_t>(size) >= sizeof(buf)) {
+      SUPLA_LOG_WARNING("WebSender error - buffer too small");
+      return;
+    }
+    send(buf);
   }
-  if (size < 0) {
-    SUPLA_LOG_WARNING("WebSender error - snprintf failed");
+  sendSafe(label ? label : "");
+  send("</option>");
+}
+
+void WebSender::sendCsrfField() {
+  auto server = Supla::WebServer::Instance();
+  if (server == nullptr) {
     return;
   }
-  if (static_cast<size_t>(size) > sizeof(buf)) {
-    SUPLA_LOG_WARNING("WebSender error - buffer too small");
+
+  const char *token = server->getCsrfToken();
+  if (token == nullptr || token[0] == '\0') {
     return;
   }
-  send(buf);
+
+  auto input = voidTag("input");
+  input.attr("type", "hidden");
+  input.attr("name", "csrf");
+  input.attr("value", token);
+  input.finish();
 }
 
 void WebSender::sendHidden(bool hidden) {
@@ -484,13 +547,21 @@ void WebSender::sendTimestamp(uint32_t timestamp) {
     struct tm timeinfo;
     time_t time = timestamp;
     localtime_r(&time, &timeinfo);
-    size = strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
+    size = SUPLA_WEB_SNPRINTF(buf,
+                              sizeof(buf),
+                              "%04d-%02d-%02d %02d:%02d:%02d",
+                              timeinfo.tm_year + 1900,
+                              timeinfo.tm_mon + 1,
+                              timeinfo.tm_mday,
+                              timeinfo.tm_hour,
+                              timeinfo.tm_min,
+                              timeinfo.tm_sec);
   }
   if (size < 0) {
     SUPLA_LOG_WARNING("WebSender error - snprintf failed");
     return;
   }
-  if (static_cast<size_t>(size) > sizeof(buf)) {
+  if (static_cast<size_t>(size) >= sizeof(buf)) {
     SUPLA_LOG_WARNING("WebSender error - buffer too small");
     return;
   }

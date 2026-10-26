@@ -1,20 +1,5 @@
-/*
-   Copyright (C) AC SOFTWARE SP. Z O.O
-
-   This program is free software; you can redistribute it and/or
-   modify it under the terms of the GNU General Public License
-   as published by the Free Software Foundation; either version 2
-   of the License, or (at your option) any later version.
-
-   This program is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
-
-   You should have received a copy of the GNU General Public License
-   along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
- */
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "general_purpose_channel_base.h"
 
@@ -146,9 +131,8 @@ void GeneralPurposeChannelBase::onLoadConfig(SuplaDeviceClass *sdc) {
     setUnitBeforeValue(unit, false);
     getDefaultUnitAfterValue(unit);
     setUnitAfterValue(unit, false);
-    channelConfigState = Supla::ChannelConfigState::LocalChangePending;
+    setAndSaveConfigChangeFlag(true);
     saveConfig();
-    saveConfigChangeFlag();
   }
   return;
 }
@@ -330,9 +314,8 @@ void GeneralPurposeChannelBase::setRefreshIntervalMs(int32_t intervalMs,
   commonConfig.refreshIntervalMs = intervalMs;
   setChannelRefreshIntervalMs(intervalMs);
   if (static_cast<uint16_t>(intervalMs) != oldIntervalMs && local) {
-    channelConfigState = Supla::ChannelConfigState::LocalChangePending;
+    setAndSaveConfigChangeFlag(true);
     saveConfig();
-    saveConfigChangeFlag();
   }
 }
 
@@ -340,9 +323,8 @@ void GeneralPurposeChannelBase::setValueDivider(int32_t divider, bool local) {
   auto oldDivider = getValueDivider();
   commonConfig.divider = divider;
   if (divider != oldDivider && local) {
-    channelConfigState = Supla::ChannelConfigState::LocalChangePending;
+    setAndSaveConfigChangeFlag(true);
     saveConfig();
-    saveConfigChangeFlag();
   }
 }
 
@@ -351,9 +333,8 @@ void GeneralPurposeChannelBase::setValueMultiplier(int32_t multiplier,
   auto oldMultiplier = getValueMultiplier();
   commonConfig.multiplier = multiplier;
   if (multiplier != oldMultiplier && local) {
-    channelConfigState = Supla::ChannelConfigState::LocalChangePending;
+    setAndSaveConfigChangeFlag(true);
     saveConfig();
-    saveConfigChangeFlag();
   }
 }
 
@@ -361,9 +342,8 @@ void GeneralPurposeChannelBase::setValueAdded(int64_t added, bool local) {
   auto oldAdded = getValueAdded();
   commonConfig.added = added;
   if (added != oldAdded && local) {
-    channelConfigState = Supla::ChannelConfigState::LocalChangePending;
+    setAndSaveConfigChangeFlag(true);
     saveConfig();
-    saveConfigChangeFlag();
   }
 }
 
@@ -372,9 +352,8 @@ void GeneralPurposeChannelBase::setValuePrecision(uint8_t precision,
   auto oldPrecision = getValuePrecision();
   commonConfig.precision = precision;
   if (precision != oldPrecision && local) {
-    channelConfigState = Supla::ChannelConfigState::LocalChangePending;
+    setAndSaveConfigChangeFlag(true);
     saveConfig();
-    saveConfigChangeFlag();
   }
 }
 
@@ -389,9 +368,8 @@ void GeneralPurposeChannelBase::setUnitBeforeValue(const char *unit,
             SUPLA_GENERAL_PURPOSE_UNIT_SIZE - 1);
     commonConfig.unitBeforeValue[SUPLA_GENERAL_PURPOSE_UNIT_SIZE - 1] = '\0';
     if (local) {
-      channelConfigState = Supla::ChannelConfigState::LocalChangePending;
+      setAndSaveConfigChangeFlag(true);
       saveConfig();
-      saveConfigChangeFlag();
     }
   }
 }
@@ -406,9 +384,8 @@ void GeneralPurposeChannelBase::setUnitAfterValue(const char *unit,
         commonConfig.unitAfterValue, unit, SUPLA_GENERAL_PURPOSE_UNIT_SIZE - 1);
     commonConfig.unitAfterValue[SUPLA_GENERAL_PURPOSE_UNIT_SIZE - 1] = '\0';
     if (local) {
-      channelConfigState = Supla::ChannelConfigState::LocalChangePending;
+      setAndSaveConfigChangeFlag(true);
       saveConfig();
-      saveConfigChangeFlag();
     }
   }
 }
@@ -418,9 +395,8 @@ void GeneralPurposeChannelBase::setNoSpaceBeforeValue(
   auto oldNoSpaceBeforeValue = getNoSpaceBeforeValue();
   commonConfig.noSpaceBeforeValue = noSpaceBeforeValue;
   if (noSpaceBeforeValue != oldNoSpaceBeforeValue && local) {
-    channelConfigState = Supla::ChannelConfigState::LocalChangePending;
+    setAndSaveConfigChangeFlag(true);
     saveConfig();
-    saveConfigChangeFlag();
   }
 }
 
@@ -429,9 +405,8 @@ void GeneralPurposeChannelBase::setNoSpaceAfterValue(uint8_t noSpaceAfterValue,
   auto oldNoSpaceAfterValue = getNoSpaceAfterValue();
   commonConfig.noSpaceAfterValue = noSpaceAfterValue;
   if (noSpaceAfterValue != oldNoSpaceAfterValue && local) {
-    channelConfigState = Supla::ChannelConfigState::LocalChangePending;
+    setAndSaveConfigChangeFlag(true);
     saveConfig();
-    saveConfigChangeFlag();
   }
 }
 
@@ -440,9 +415,8 @@ void GeneralPurposeChannelBase::setKeepHistory(uint8_t keepHistory,
   auto oldKeepHistory = getKeepHistory();
   commonConfig.keepHistory = keepHistory;
   if (keepHistory != oldKeepHistory && local) {
-    channelConfigState = Supla::ChannelConfigState::LocalChangePending;
+    setAndSaveConfigChangeFlag(true);
     saveConfig();
-    saveConfigChangeFlag();
   }
 }
 
@@ -450,9 +424,8 @@ void GeneralPurposeChannelBase::setChartType(uint8_t chartType, bool local) {
   auto oldChartType = getChartType();
   commonConfig.chartType = chartType;
   if (chartType != oldChartType && local) {
-    channelConfigState = Supla::ChannelConfigState::LocalChangePending;
+    setAndSaveConfigChangeFlag(true);
     saveConfig();
-    saveConfigChangeFlag();
   }
 }
 
@@ -499,8 +472,7 @@ Supla::ApplyConfigResult GeneralPurposeChannelBase::applyChannelConfig(
               defaultUnitAfterValue,
               SUPLA_GENERAL_PURPOSE_UNIT_SIZE)) {
     if (local) {
-      channelConfigState = Supla::ChannelConfigState::LocalChangePending;
-      saveConfigChangeFlag();
+      setAndSaveConfigChangeFlag(true);
     }
     return Supla::ApplyConfigResult::SetChannelConfigNeeded;
   }

@@ -1,39 +1,27 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
-
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
-
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
- */
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 /*
  * Linux YAML based config file.
  *
- * It contain two parts:
- * 1. etc/supla-device.yaml file with user defined read-only configuration
- * 2. var/supla-device.yaml file used for supla-device read/write storage for
- *    GUID and AUTHKEY
+ * It contains a read-only YAML configuration file (by default
+ * etc/supla-device.yaml) and read/write files below state_files_path:
+ * guid_auth.yaml for GUID and AUTHKEY, config_storage.bin for writable
+ * configuration, and state.bin for runtime state.
  *
  * All "set" methods are executed against read/write storage or disabled.
  * It overrides some "get" methods to use read only storage with different
  * keys than those used by default in supla-device.
  *
  * Example config yaml file. Names and values are case-sensitive.
- * Please pay attantion to spaces, as those are important in yaml files.
+ * Please pay attention to spaces, as those are important in YAML files.
 
 name: Device name
 # log_level - optional, values: info (default), debug, verbose, warning, error
 log_level: debug
+# proto_verbose_log - optional, defaults to false; enables insecure low-level
+# protocol dumps that may expose secrets
+proto_verbose_log: false
 
 supla:
   server: svrXYZ.supla.org
@@ -47,12 +35,12 @@ channels:
   - type: VirtualRelay
 
   - type: ImpulseCounterParsed
+    counter: total_m3
     source:
       type: File
       file: /home/something
     parser:
       type: Json
-      counter: total_m3
 
  */
 
@@ -73,9 +61,15 @@ channels:
 #include <yaml-cpp/yaml.h>
 
 #include <map>
+#include <set>
 #include <string>
 
 namespace Supla {
+
+namespace Control {
+class ActionTrigger;
+class Relay;
+}
 
 class LinuxYamlConfig : public KeyValue {
  public:
@@ -86,6 +80,7 @@ class LinuxYamlConfig : public KeyValue {
   bool isVerbose();
   bool isWarning();
   bool isError();
+  bool isProtoVerboseLog();
 
   bool loadChannels();
 
@@ -100,6 +95,7 @@ class LinuxYamlConfig : public KeyValue {
   bool getUInt8(const char* key, uint8_t* result) override;
 
   void commit() override;
+  bool commitWithResult() override;
 
   // Device generic config
   bool setGUID(const char* guid) override;
@@ -125,7 +121,7 @@ class LinuxYamlConfig : public KeyValue {
   std::string getStateFilesPath();
 
   bool isMqttSource();
-  bool isValidMqttConfig();
+  bool isValidMqttConfig() const;
 
   bool getMqttClientHost(char* result) const;
   int32_t getMqttClientPort() const;
@@ -136,8 +132,23 @@ class LinuxYamlConfig : public KeyValue {
   bool getMqttClientVerifyCA() const;
   bool getMqttClientFileCA(char* result) const;
 
+  void markChannelParameterUsed();
+  YAML::Node getAndMarkChannelParameter(const YAML::Node& channel,
+                                         const char* parameter);
+  bool addCommonChannelParameters(const YAML::Node& ch,
+                                  Supla::Element* element);
+
  protected:
+  bool loadTopLevelSources(const YAML::Node& sourcesNode);
+  bool loadTopLevelParsers(const YAML::Node& parsersNode);
   bool parseChannel(const YAML::Node& ch, int channelNumber);
+  Supla::Source::Source* findSource(const std::string& name);
+  Supla::Parser::Parser* findParser(const std::string& name);
+  Supla::Source::Source* addSourceWithName(const YAML::Node& source,
+                                           const std::string& name);
+  Supla::Parser::Parser* addParserWithName(const YAML::Node& parser,
+                                           const std::string& name,
+                                           Supla::Source::Source* src);
   Supla::Parser::Parser* addParser(const YAML::Node& parser,
                                    Supla::Source::Source* src);
   Supla::Source::Source* addSource(const YAML::Node& ch);
@@ -163,6 +174,7 @@ class LinuxYamlConfig : public KeyValue {
                    int channelNumber,
                    Supla::Parser::Parser*);
   bool addFronius(const YAML::Node& ch, int channelNumber);
+  bool addSolarEdge(const YAML::Node& ch, int channelNumber);
   bool addAfore(const YAML::Node& ch, int channelNumber);
   bool addHvac(const YAML::Node& ch, int channelNumber);
   bool addCustomHvac(const YAML::Node& ch,
@@ -170,6 +182,12 @@ class LinuxYamlConfig : public KeyValue {
                      Payload::Payload* payload);
   bool addCommonParameters(const YAML::Node& ch,
                            Supla::Element* element);
+  bool addWeeklyScheduleParameter(const YAML::Node& ch,
+                                  Supla::Element* element);
+  bool addDefaultFunctionNumber(const YAML::Node& ch,
+                                Supla::Element* element);
+  bool addRelayDefaultFunction(const YAML::Node& ch,
+                               Supla::Control::Relay* relay);
   bool addThermometerParsed(const YAML::Node& ch,
                             int channelNumber,
                             Supla::Parser::Parser* parser);
@@ -251,7 +269,8 @@ class LinuxYamlConfig : public KeyValue {
   std::map<int, Supla::Payload::Payload*> payloads;
   std::map<int, Supla::Output::Output*> outputs;
 
-  std::size_t paramCount = 0;
+  std::set<std::string> usedChannelParameters;
+  std::size_t untrackedChannelParameterCount = 0;
   int parserCount = 0;
   int sourceCount = 0;
   int payloadCount = 0;

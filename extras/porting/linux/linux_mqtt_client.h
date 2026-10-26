@@ -1,20 +1,5 @@
-/*
- * Copyright (C) AC SOFTWARE SP. Z O.O
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
- */
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #ifndef EXTRAS_PORTING_LINUX_LINUX_MQTT_CLIENT_H_
 #define EXTRAS_PORTING_LINUX_LINUX_MQTT_CLIENT_H_
@@ -25,6 +10,9 @@
 #include <yaml-cpp/yaml.h>
 
 #include <memory>
+#include <chrono>
+#include <vector>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 
@@ -42,7 +30,18 @@ class LinuxMqttClient {
 
   void unsubscribeTopic(const std::string& topic);
 
-  void subscribeTopic(const std::string& topic, int qos);
+  void subscribeTopic(const std::string& topic);
+
+  bool getMessage(const std::string& topic, std::string& message) const;
+
+  struct Message {
+    std::string content;
+    bool received = false;
+    std::chrono::steady_clock::time_point updated;
+  };
+  // Copies all requested topics under one lock; parsing happens after return.
+  std::vector<Message> getMessages(
+      const std::vector<std::string>& requestedTopics) const;
 
   static void publishCallback(void**, struct mqtt_response_publish* published);
 
@@ -54,13 +53,14 @@ class LinuxMqttClient {
 
   struct mqtt_client* mq_client = nullptr;
 
-  static std::unordered_map<std::string, std::string> topics;
-
   bool useSSL = false;
   bool verifyCA = false;
   std::string fileCA;
 
  private:
+  static std::mutex topicsMutex;
+  static std::unordered_map<std::string, Message> topics;
+
   explicit LinuxMqttClient(const LinuxYamlConfig& yamlConfig);
 
   LinuxMqttClient(const LinuxMqttClient&) = delete;
@@ -73,9 +73,6 @@ class LinuxMqttClient {
   std::string username;
   std::string password;
   std::string clientName;
-
-  std::array<uint8_t, 8192> sendbuf;
-  std::array<uint8_t, 2048> recvbuf;
 
   static std::shared_ptr<Supla::LinuxMqttClient> instance;
 };

@@ -1,18 +1,5 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #ifndef SRC_SUPLA_LOCAL_ACTION_H_
 #define SRC_SUPLA_LOCAL_ACTION_H_
@@ -20,6 +7,51 @@
 #include <stdint.h>
 
 namespace Supla {
+
+// Fixed-size action list used by the local-action filter.  This deliberately
+// avoids std::initializer_list because the AVR Arduino toolchain does not
+// provide that header.  The current firmware uses at most three entries for a
+// single event (the selected lock action and the two config-mode actions).
+class ActionAllowList {
+ public:
+  ActionAllowList() : count(0) {
+    actions[0] = 0;
+    actions[1] = 0;
+    actions[2] = 0;
+  }
+
+  ActionAllowList(uint16_t action) : count(1) {  // NOLINT(runtime/explicit)
+    actions[0] = action;
+    actions[1] = 0;
+    actions[2] = 0;
+  }
+
+  ActionAllowList(uint16_t action1, uint16_t action2) : count(2) {
+    actions[0] = action1;
+    actions[1] = action2;
+    actions[2] = 0;
+  }
+
+  ActionAllowList(uint16_t action1, uint16_t action2, uint16_t action3)
+      : count(3) {
+    actions[0] = action1;
+    actions[1] = action2;
+    actions[2] = action3;
+  }
+
+  bool contains(uint16_t action) const {
+    for (uint8_t i = 0; i < count; i++) {
+      if (actions[i] == action) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+ private:
+  uint16_t actions[3];
+  uint8_t count;
+};
 
 class ActionHandler;
 class LocalAction;
@@ -42,11 +74,14 @@ class ActionHandlerClient {
   virtual void setAlwaysEnabled();
   virtual void enable();
   virtual void disable();
+  void disableForConfigMode();
+  void restoreAfterConfigMode();
   virtual bool isAlwaysEnabled();
 
  protected:
   bool enabled = true;
   bool alwaysEnabled = false;
+  bool disabledForConfigMode = false;
 };
 
 class LocalAction {
@@ -60,8 +95,15 @@ class LocalAction {
       bool alwaysEnabled = false);
 
   virtual void runAction(uint16_t event) const;
+  // The allow-list is an additional restriction.  An empty list deliberately
+  // blocks every action, while the one-argument overload keeps the historic,
+  // unrestricted behavior.
+  virtual void runAction(
+      uint16_t event,
+      const ActionAllowList &allowOnlyActions) const;
 
   virtual bool isEventAlreadyUsed(uint16_t event, bool ignoreAlwaysEnabled);
+  virtual bool hasEnabledAction(uint16_t event, uint16_t action) const;
   virtual ActionHandlerClient *getHandlerForFirstClient(uint16_t event);
   virtual ActionHandlerClient *getHandlerForClient(ActionHandler *client,
                                                    uint16_t event);
@@ -72,7 +114,14 @@ class LocalAction {
   virtual void enableOtherClients(const ActionHandler *client, uint16_t event);
 
   static void DeleteActionsHandledBy(const ActionHandler *client);
+  static void DeleteActionsHandledByExcept(
+      const ActionHandler *client,
+      const ActionAllowList &preservedActions);
   static void DeleteActionsTriggeredBy(const LocalAction *action);
+  static void DeleteAction(const LocalAction *trigger,
+                           const ActionHandler *client,
+                           uint16_t event,
+                           uint16_t action);
   static void NullifyActionsHandledBy(const ActionHandler *client);
 
   // action and event are internally uint16_t type, however -1 is used
@@ -87,6 +136,10 @@ class LocalAction {
   virtual bool disableActionsInConfigMode();
 
   static ActionHandlerClient *getClientListPtr();
+
+ private:
+  void runActionInternal(uint16_t event,
+                         const ActionAllowList *allowOnlyActions) const;
 };
 
 };  // namespace Supla

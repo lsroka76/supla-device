@@ -1,20 +1,5 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
-
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
-
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "sensor_parsed.h"
 
@@ -30,6 +15,32 @@
 #include <map>
 
 using Supla::Sensor::SensorParsedBase;
+
+namespace {
+
+Supla::BatteryState parseBatteryState(
+    const std::variant<int, bool, std::string> &value) {
+  if (std::holds_alternative<int>(value)) {
+    const int state = std::get<int>(value);
+    if (state == SUPLA_BATTERY_STATE_OK) {
+      return Supla::BatteryState::Normal;
+    }
+    if (state == SUPLA_BATTERY_STATE_LOW) {
+      return Supla::BatteryState::Low;
+    }
+  } else if (std::holds_alternative<std::string>(value)) {
+    const auto &state = std::get<std::string>(value);
+    if (state == "normal") {
+      return Supla::BatteryState::Normal;
+    }
+    if (state == "low") {
+      return Supla::BatteryState::Low;
+    }
+  }
+  return Supla::BatteryState::NotSet;
+}
+
+}  // namespace
 
 std::map<std::string, Supla::Control::ActionTriggerParsed *>
     SensorParsedBase::atMap;
@@ -53,6 +64,15 @@ void SensorParsedBase::setMapping(const std::string &parameter,
   key += std::to_string(id);
   parameterToKey[parameter] = key;
   parser->addKey(key, index);
+}
+
+void SensorParsedBase::setForceBatteryPowered(bool forceBatteryPowered) {
+  this->forceBatteryPowered = forceBatteryPowered;
+}
+
+void SensorParsedBase::setBatteryStateAppliesToWholeDevice(
+    bool applyToWholeDevice) {
+  batteryStateAppliesToWholeDevice = applyToWholeDevice;
 }
 
 void SensorParsedBase::setMultiplier(const std::string &parameter,
@@ -87,7 +107,7 @@ bool SensorParsedBase::refreshParserSource(bool updateChannelState) {
       return false;
     }
     if (parser->refreshParserSource()) {
-      if (!parser->isValid()) {
+      if (!parser->isSourceValid()) {
         return false;
       }
       if (updateChannelState) {
@@ -103,6 +123,46 @@ bool SensorParsedBase::refreshParserSource(bool updateChannelState) {
     }
   }
   return false;
+}
+
+bool SensorParsedBase::setOfflineIfSourceDisconnected() {
+  if (!parser || parser->isSourceConnected()) {
+    return false;
+  }
+
+  setChannelStateOnline(false);
+  return true;
+}
+
+void SensorParsedBase::setChannelStateOnline(bool online) {
+  if (auto channel = getChannel()) {
+    if (online) {
+      channel->setStateOnline();
+    } else {
+      channel->setStateOffline();
+    }
+  }
+  if (auto secondaryChannel = getSecondaryChannel()) {
+    if (online) {
+      secondaryChannel->setStateOnline();
+    } else {
+      secondaryChannel->setStateOffline();
+    }
+  }
+}
+
+bool SensorParsedBase::isSourceStateOffline(bool useOfflineOnInvalidState) {
+  return useOfflineOnInvalidState && parser && getStateValue(false) == -1;
+}
+
+bool SensorParsedBase::isOffline() {
+  return isSourceStateOffline(useOfflineOnInvalidState);
+}
+
+void SensorParsedBase::setUseOfflineOnInvalidState(
+    bool useOfflineOnInvalidState) {
+  this->useOfflineOnInvalidState = useOfflineOnInvalidState;
+  SUPLA_LOG_INFO("useOfflineOnInvalidState = %d", useOfflineOnInvalidState);
 }
 
 bool SensorParsedBase::isParameterConfigured(const std::string &parameter) {
@@ -150,6 +210,8 @@ int SensorParsedBase::getStateValue(bool updateChannelState) {
           if (std::find(stateOnValues.begin(), stateOnValues.end(), value) !=
               stateOnValues.end()) {
             state = 1;
+          } else if (value != std::variant<int, bool, std::string>(-1)) {
+            state = 0;
           }
         }
         if (state == -1) {
@@ -163,7 +225,9 @@ int SensorParsedBase::getStateValue(bool updateChannelState) {
             state = 0;
           }
         }
-       setLastValue(state);
+        if (std::holds_alternative<int>(value)) {
+          setLastValue(std::get<int>(value));
+        }
       }
     }
   }
@@ -295,7 +359,7 @@ void SensorParsedBase::updateBatteryInfoFlags() {
     unsigned char batteryLevel = 255;
     bool batteryPowered = true;
     bool batteryPoweredConfigured = false;
-    if (isParameterConfigured(ForceBatteryPowered)) {
+    if (forceBatteryPowered) {
       batteryPowered = true;
       batteryPoweredConfigured = true;
     } else {
@@ -325,6 +389,19 @@ void SensorParsedBase::updateBatteryInfoFlags() {
       channel->setBatteryPowered(batteryPowered);
       if (auto secondaryChannel = getSecondaryChannel()) {
         secondaryChannel->setBatteryPowered(batteryPowered);
+      }
+    }
+    if (isParameterConfigured(BatteryState)) {
+      Supla::BatteryState batteryState = Supla::BatteryState::NotSet;
+      const auto stateValue = getStateParameterValue(BatteryState);
+      if (parser->isValid()) {
+        batteryState = parseBatteryState(stateValue);
+      }
+      channel->setBatteryState(
+          batteryState, batteryStateAppliesToWholeDevice);
+      if (auto secondaryChannel = getSecondaryChannel()) {
+        secondaryChannel->setBatteryState(
+            batteryState, batteryStateAppliesToWholeDevice);
       }
     }
   }

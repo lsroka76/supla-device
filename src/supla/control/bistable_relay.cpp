@@ -1,20 +1,5 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
-
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
-
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "bistable_relay.h"
 
@@ -64,6 +49,9 @@ BistableRelay::BistableRelay(Supla::Io::IoPin outputPin,
   statusInputPin.setMode(INPUT);
   stateOnInit = STATE_ON_INIT_KEEP;
   setMinimumAllowedDurationMs(1000);
+  if (!isStatusUnknown()) {
+    setWeeklyScheduleAvailable();
+  }
 }
 
 BistableRelay::BistableRelay(Supla::Io::Base *io,
@@ -120,7 +108,7 @@ void BistableRelay::onInit() {
   busy = true;
   Supla::Control::Relay::onInit();
   busy = false;
-  if (!skipInitialStateSetting) {
+  if (!runtimeFlags.skipInitialStateSetting) {
     if (stateOnInit == STATE_ON_INIT_ON ||
         stateOnInit == STATE_ON_INIT_RESTORED_ON) {
       turnOn();
@@ -166,6 +154,13 @@ int32_t BistableRelay::handleNewValueFromServer(
   }
 }
 
+void BistableRelay::handleAction(int event, int action) {
+  if (busy) {
+    return;
+  }
+  Relay::handleAction(event, action);
+}
+
 void BistableRelay::turnOn(_supla_int_t duration) {
   if (busy) {
     return;
@@ -201,8 +196,19 @@ bool BistableRelay::isOn() {
   return statusInputPin.readActive(channel.getChannelNumber());
 }
 
-bool BistableRelay::isStatusUnknown() {
-  return statusInputPin.getPin() < 0;
+bool BistableRelay::isStatusUnknown() { return statusInputPin.getPin() < 0; }
+
+bool BistableRelay::canUseWeeklySchedule() const {
+  // Absolute weekly states cannot be applied safely when the physical state
+  // of a toggle-only relay is unknown.
+  return statusInputPin.getPin() >= 0;
+}
+
+bool BistableRelay::applyWeeklyScheduleState(bool on) {
+  if (busy) {
+    return false;
+  }
+  return Relay::applyWeeklyScheduleState(on);
 }
 
 void BistableRelay::internalToggle() {

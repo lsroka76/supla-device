@@ -1,20 +1,5 @@
-/*
- * Copyright (C) AC SOFTWARE SP. Z O.O
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
- */
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #ifndef ARDUINO_ARCH_AVR
 #include "button_action_trigger_config.h"
@@ -57,10 +42,17 @@ void ButtonActionTriggerConfig::send(Supla::WebSender* sender) {
   auto cfg = Supla::Storage::ConfigInstance();
   if (cfg) {
     int32_t value = 0;
+    int32_t localUnlock = 0;
     char key[SUPLA_CONFIG_MAX_KEY_SIZE] = {};
     Supla::Config::generateKey(key, channelNumber,
                              Supla::ConfigTag::BtnActionTriggerCfgTagPrefix);
     cfg->getInt32(key, &value);
+    char localUnlockKey[SUPLA_CONFIG_MAX_KEY_SIZE] = {};
+    Supla::Config::generateKey(
+        localUnlockKey,
+        channelNumber,
+        Supla::ConfigTag::BtnActionTriggerLocalUnlockTagPrefix);
+    cfg->getInt32(localUnlockKey, &localUnlock);
 
     char label[100] = {};
     if (labelPrefix) {
@@ -88,6 +80,26 @@ void ButtonActionTriggerConfig::send(Supla::WebSender* sender) {
             value == 2);
       });
     });
+
+    char unlockLabel[100] = {};
+    if (labelPrefix) {
+      snprintf(unlockLabel,
+               sizeof(unlockLabel),
+               "%s local unlock while locked",
+               labelPrefix);
+    } else {
+      snprintf(unlockLabel,
+               sizeof(unlockLabel),
+               "IN%d local unlock while locked",
+               buttonNumber);
+    }
+    sender->labeledField(localUnlockKey, unlockLabel, [&]() {
+      auto select = sender->selectTag(localUnlockKey, localUnlockKey);
+      select.body([&]() {
+        sender->selectOption(0, "Disabled", localUnlock == 0);
+        sender->selectOption(1, "Enabled", localUnlock != 0);
+      });
+    });
   }
 }
 
@@ -111,6 +123,15 @@ bool ButtonActionTriggerConfig::handleResponse(const char* key,
         break;
       }
     }
+    return true;
+  }
+  Supla::Config::generateKey(
+      keyRef,
+      channelNumber,
+      Supla::ConfigTag::BtnActionTriggerLocalUnlockTagPrefix);
+  if (strcmp(key, keyRef) == 0) {
+    int unlock = stringToUInt(value);
+    cfg->setInt32(keyRef, unlock == 0 ? 0 : 1);
     return true;
   }
   return false;

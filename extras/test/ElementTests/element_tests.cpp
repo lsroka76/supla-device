@@ -1,18 +1,5 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <arduino_mock.h>
 #include <gtest/gtest.h>
@@ -225,6 +212,45 @@ TEST_F(ElementTests, ChannelElementMethods) {
   EXPECT_TRUE(el1.channel.isUpdateReady());
   EXPECT_EQ(el1.iterateConnected(), false);  // #6
   EXPECT_EQ(el1.iterateConnected(), true);   // #7
+}
+
+TEST_F(ElementTests, ChannelStateContainsDeviceBatteryState) {
+  ElementWithChannel element;
+  TDSC_ChannelState channelState = {};
+  channelState.ChannelNumber = element.getChannelNumber();
+
+  element.getChannel()->setBatteryPowered(true);
+  element.getChannel()->setBatteryState(Supla::BatteryState::Normal);
+  element.handleGetChannelState(&channelState);
+
+  EXPECT_NE(channelState.Fields & SUPLA_CHANNELSTATE_FIELD_BATTERY_STATE, 0);
+  EXPECT_EQ(channelState.Fields &
+                SUPLA_CHANNELSTATE_FIELD_DEVICE_BATTERY_STATE,
+            0);
+  EXPECT_EQ(channelState.BatteryState, SUPLA_BATTERY_STATE_OK);
+
+  channelState = {};
+  channelState.ChannelNumber = element.getChannelNumber();
+  element.getChannel()->setBatteryState(Supla::BatteryState::Low, true);
+  element.handleGetChannelState(&channelState);
+
+  EXPECT_NE(channelState.Fields & SUPLA_CHANNELSTATE_FIELD_BATTERYPOWERED, 0);
+  EXPECT_EQ(channelState.BatteryPowered, 1);
+  EXPECT_NE(channelState.Fields & SUPLA_CHANNELSTATE_FIELD_BATTERY_STATE, 0);
+  EXPECT_NE(channelState.Fields &
+                SUPLA_CHANNELSTATE_FIELD_DEVICE_BATTERY_STATE,
+            0);
+  EXPECT_EQ(channelState.BatteryState, SUPLA_BATTERY_STATE_LOW);
+
+  channelState = {};
+  channelState.ChannelNumber = element.getChannelNumber();
+  element.getChannel()->setBatteryState(Supla::BatteryState::NotSet, true);
+  element.handleGetChannelState(&channelState);
+
+  EXPECT_EQ(channelState.Fields & SUPLA_CHANNELSTATE_FIELD_BATTERY_STATE, 0);
+  EXPECT_EQ(channelState.Fields &
+                SUPLA_CHANNELSTATE_FIELD_DEVICE_BATTERY_STATE,
+            0);
 }
 
 TEST_F(ElementTests, ChannelElementWithWeeklySchedule) {

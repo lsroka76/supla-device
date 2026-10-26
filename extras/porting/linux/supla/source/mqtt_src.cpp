@@ -1,20 +1,5 @@
-/*
- * Copyright (C) AC SOFTWARE SP. Z O.O
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
- */
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "mqtt_src.h"
 
@@ -23,18 +8,32 @@
 #include <supla/log_wrapper.h>
 
 #include <vector>
+#include <chrono>
+#include <stdexcept>
+#include <set>
 #include <string>
 
 namespace Supla::Source {
 
 Mqtt::Mqtt(const Supla::LinuxYamlConfig& yamlConfig,
            const std::vector<std::string>& topics,
-           int qos)
-    : topics(topics), qos(qos) {
+           const std::vector<std::string>& documentIds,
+           unsigned int expirationTimeSec)
+    : topics(topics), documentIds(documentIds),
+      expirationTimeSec(expirationTimeSec) {
+  if (this->documentIds.empty()) {
+    this->documentIds = topics.size() == 1 ?
+        std::vector<std::string>{"default"} : topics;
+  }
+  if (this->documentIds.size() != topics.size() ||
+      std::set<std::string>(this->documentIds.begin(),
+                            this->documentIds.end()).size() != topics.size()) {
+    throw std::invalid_argument("Invalid or duplicate MQTT document ids");
+  }
   client = Supla::LinuxMqttClient::getInstance(yamlConfig);
   for (auto& topic : topics) {
     SUPLA_LOG_DEBUG("Mark topic %s to subscribe", topic.c_str());
-    client->subscribeTopic(topic, qos);
+    client->subscribeTopic(topic);
   }
 }
 
@@ -51,11 +50,48 @@ bool Supla::Source::Mqtt::isConnected() {
   return client && client->isConnected();
 }
 
+std::vector<std::string> Mqtt::getDocumentIds() const {
+  return documentIds;
+}
+
+std::vector<Document> Mqtt::getDocuments() {
+  const auto messages = client->getMessages(topics);
+  const auto now = std::chrono::steady_clock::now();
+  std::vector<Document> documents;
+  for (size_t i = 0; i < messages.size(); ++i) {
+    const auto& message = messages[i];
+    const bool fresh = !expirationTimeSec ||
+        now - message.updated <= std::chrono::seconds(expirationTimeSec);
+    documents.push_back({documentIds[i], message.content,
+                         message.received, fresh});
+  }
+  return documents;
+}
+
 std::string Supla::Source::Mqtt::getContent() {
+  if (expirationTimeSec) {
+    const auto documents = getDocuments();
+    latestMessage.clear();
+    for (size_t i = 0; i < documents.size(); ++i) {
+      const auto& document = documents[i];
+      if (!document.received || !document.fresh) {
+        latestMessage.clear();
+        return latestMessage;
+      }
+      // Keep every position, including received empty payloads. Omitting any
+      // document would assign the following payload to a different Simple key.
+      if (i != 0) {
+        latestMessage += "\n";
+      }
+      latestMessage += document.content;
+    }
+    return latestMessage;
+  }
+
   std::string combinedMessages;
   for (const auto& topic : topics) {
-    if (client->topics.find(topic) != client->topics.end()) {
-      std::string currentMessage = client->topics[topic];
+    std::string currentMessage;
+    if (client->getMessage(topic, currentMessage)) {
       if (combinedMessages.empty()) {
         combinedMessages = currentMessage;
       } else {

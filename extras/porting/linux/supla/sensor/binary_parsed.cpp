@@ -1,20 +1,5 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
-
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
-
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <supla/log_wrapper.h>
 #include <supla/time.h>
@@ -32,50 +17,36 @@ void Supla::Sensor::BinaryParsed::onInit() {
 }
 
 bool Supla::Sensor::BinaryParsed::getValue() {
-  bool value = false;
-
   int result = getStateValue(false);
-
-  if (result == 1) {
-    value = true;
+  if (result < 0) {
+    return false;
   }
 
-//  setLastState(isOffline() ? -1 : (value ? 1 : 0));
-  setLastState(value ? 1 : 0);
+  if (lastState != result) {
+    clearedByTimeout = false;
+    if (result == 1) {
+      set();
+    } else if (result == 0) {
+      clear();
+    }
+  } else if (clearedByTimeout) {
+    return false;
+  }
 
-  return value;
+  setLastState(result);
+  return result == 1;
 }
 
 void Supla::Sensor::BinaryParsed::iterateAlways() {
-  Supla::Sensor::VirtualBinary::iterateAlways();
-
   if (parser && (millis() - lastOfflineReadTime > 100)) {
-    if (!parser->isSourceConnected()) {
+    if (setOfflineIfSourceDisconnected()) {
       lastOfflineReadTime = millis();
-      channel.setStateOffline();
       return;
     }
     refreshParserSource(false);
     lastOfflineReadTime = millis();
-    if (isOffline()) {
-      channel.setStateOffline();
-    } else {
-      channel.setStateOnline();
-    }
+    setChannelStateOnline(!isOffline());
   }
-}
 
-bool Supla::Sensor::BinaryParsed::isOffline() {
-  if (useOfflineOnInvalidState && parser) {
-    if (getStateValue(false) == -1) {
-      return true;
-    }
-  }
-  return false;
-}
-
-void Supla::Sensor::BinaryParsed::setUseOfflineOnInvalidState(
-    bool useOfflineOnInvalidState) {
-  this->useOfflineOnInvalidState = useOfflineOnInvalidState;
-  SUPLA_LOG_INFO("useOfflineOnInvalidState = %d", useOfflineOnInvalidState);
+  VirtualBinary::iterateAlways();
 }

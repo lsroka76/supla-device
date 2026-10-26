@@ -1,18 +1,5 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 /* Relay class
  * This class is used to control any type of relay that can be controlled
@@ -27,6 +14,7 @@
 #include "../action_handler.h"
 #include "../channel_element.h"
 #include "../io.h"
+#include "weekly_schedule_component.h"
 
 #define STATE_ON_INIT_RESTORED_OFF -3
 #define STATE_ON_INIT_RESTORED_ON  -2
@@ -34,11 +22,16 @@
 #define STATE_ON_INIT_OFF          0
 #define STATE_ON_INIT_ON           1
 
-#define RELAY_FLAGS_ON (1 << 0)
-#define RELAY_FLAGS_STAIRCASE (1 << 1)
+#define RELAY_FLAGS_ON               (1 << 0)
+#define RELAY_FLAGS_STAIRCASE        (1 << 1)
 #define RELAY_FLAGS_IMPULSE_FUNCTION (1 << 2)  // i.e. gate, door, gateway
-#define RELAY_FLAGS_OVERCURRENT (1 << 3)
+#define RELAY_FLAGS_OVERCURRENT      (1 << 3)
+#define RELAY_FLAGS_AUTOMATIC_MODE   (1 << 5)
 
+#define RELAY_STORED_MODE_NOT_SET    0
+#define RELAY_STORED_MODE_AUTOMATIC  1
+#define RELAY_STORED_MODE_FORCED_OFF 2
+#define RELAY_STORED_MODE_FORCED_ON  3
 
 namespace Supla {
 namespace Io {
@@ -47,32 +40,54 @@ struct IoPin;
 
 namespace Control {
 class Button;
+class RelayWeeklySchedule;
 
 class Relay : public ChannelElement, public ActionHandler {
  public:
+  friend class RelayWeeklySchedule;
+
+  union RelayFlags {
+    struct {
+      uint8_t relayOn : 1;
+      uint8_t staircaseFunction : 1;
+      uint8_t impulseFunction : 1;
+      uint8_t overcurrent : 1;
+      uint8_t weeklySchedule : 1;
+      // AUTOMATIC remains encoded as bit 5 for OTA compatibility.
+      uint8_t operatingMode : 2;
+      uint8_t reserved : 1;
+    } flags;
+    uint8_t rawValue = 0;
+  };
+
+  static_assert(sizeof(RelayFlags) == sizeof(uint8_t),
+                "Flags size must be 1 byte");
+
   explicit Relay(Supla::Io::IoPin outputPin,
                  _supla_int_t functions =
                      (0xFF ^ SUPLA_BIT_FUNC_CONTROLLINGTHEROLLERSHUTTER));
-  explicit Relay(Supla::Io::Base *io, int pin,
-        bool highIsOn = true,
-        _supla_int_t functions = (0xFF ^
-                                  SUPLA_BIT_FUNC_CONTROLLINGTHEROLLERSHUTTER));
+  explicit Relay(Supla::Io::Base *io,
+                 int pin,
+                 bool highIsOn = true,
+                 _supla_int_t functions =
+                     (0xFF ^ SUPLA_BIT_FUNC_CONTROLLINGTHEROLLERSHUTTER));
   explicit Relay(int pin,
-        bool highIsOn = true,
-        _supla_int_t functions = (0xFF ^
-                                  SUPLA_BIT_FUNC_CONTROLLINGTHEROLLERSHUTTER));
+                 bool highIsOn = true,
+                 _supla_int_t functions =
+                     (0xFF ^ SUPLA_BIT_FUNC_CONTROLLINGTHEROLLERSHUTTER));
 
   virtual ~Relay();
 
   virtual Relay &setDefaultStateOn();
   virtual Relay &setDefaultStateOff();
   virtual Relay &setDefaultStateRestore();
+  virtual Relay &setPreloadStateOnSoftReset(bool enabled = true);
   virtual Relay &keepTurnOnDuration(bool keep = true);  // DEPREACATED
 
-  [[deprecated("Use IoPin::writeActive/writeInactive instead")]]
-  virtual uint8_t pinOnValue();
-  [[deprecated("Use IoPin::writeActive/writeInactive instead")]]
-  virtual uint8_t pinOffValue();
+  [[deprecated("Use IoPin::writeActive/writeInactive instead")]] virtual uint8_t
+  pinOnValue();
+  [[deprecated("Use IoPin::writeActive/writeInactive instead")]] virtual uint8_t
+  pinOffValue();
   virtual void turnOn(_supla_int_t duration = 0);
   virtual void turnOff(_supla_int_t duration = 0);
   virtual bool isOn();
@@ -92,10 +107,18 @@ class Relay : public ChannelElement, public ActionHandler {
   int32_t handleNewValueFromServer(TSD_SuplaChannelNewValue *newValue) override;
   void onRegistered(Supla::Protocol::SuplaSrpc *suplaSrpc) override;
   Supla::ApplyConfigResult applyChannelConfig(TSD_ChannelConfig *result,
-                              bool local = false) override;
+                                              bool local = false) override;
   void fillChannelConfig(void *channelConfig,
                          int *size,
                          uint8_t configType) override;
+  /**
+   * Returns remaining countdown timer time in seconds for an active relay
+   * countdown timer.
+   *
+   * Returns false when countdown timer support is disabled or the timer is not
+   * active.
+   */
+  bool getRemainingCountdownTimerSec(uint32_t *remainingSec) const override;
 
   // Method is used by external integrations to prepare TSD_SuplaChannelNewValue
   // value for specific channel type (i.e. to prefill durationMS field when
@@ -112,7 +135,7 @@ class Relay : public ChannelElement, public ActionHandler {
   bool isCountdownTimerFunctionEnabled() const;
   void setMinimumAllowedDurationMs(uint32_t durationMs);
 
-  static void setRelayStorageSaveDelay(int delayMs);
+  static void setRelayStorageSaveDelay(uint32_t delayMs);
 
   bool isDefaultRelatedMeterChannelSet() const;
   uint32_t getCurrentValueFromMeter() const;
@@ -131,7 +154,9 @@ class Relay : public ChannelElement, public ActionHandler {
    *
    * @return Value in 0.01 A
    */
-  uint32_t getOvercurrentThreshold() const { return overcurrentThreshold; }
+  uint32_t getOvercurrentThreshold() const {
+    return overcurrentThreshold;
+  }
 
   /**
    * Set overcurrent max level allowed
@@ -145,7 +170,9 @@ class Relay : public ChannelElement, public ActionHandler {
    *
    * @return Value in 0.01 A
    */
-  uint32_t getOvercurrentMaxAllowed() const { return overcurrentMaxAllowed; }
+  uint32_t getOvercurrentMaxAllowed() const {
+    return overcurrentMaxAllowed;
+  }
 
   /**
    * Set default duration for staircase timer function
@@ -165,6 +192,7 @@ class Relay : public ChannelElement, public ActionHandler {
     defaultImpulseDurationMs = durationMs;
   }
 
+  bool setRuntimeFunction(uint32_t channelFunction) override;
   bool setAndSaveFunction(uint32_t channelFunction) override;
 
   /**
@@ -183,23 +211,90 @@ class Relay : public ChannelElement, public ActionHandler {
 
   bool isFullyInitialized() const;
 
+  /**
+   * Enable automatic cyclic relay operation.
+   *
+   * In cyclic mode the relay alternates between:
+   *
+   *   ON  for turnOnTimeMs
+   *   OFF for turnOffTimeMs
+   *
+   * Server commands use DurationMS as follows:
+   *
+   *   ON,  DurationMS == 0  - start/resume the cycle using configured ON time
+   *   ON,  DurationMS > 0   - update ON phase duration and start the cycle
+   *   OFF, DurationMS > 0   - update OFF phase duration and enter the OFF phase;
+   *                           the relay will turn ON again after that duration
+   *   OFF, DurationMS == 0  - stop cyclic operation and remain OFF
+   *
+   * Therefore, an OFF command with a non-zero DurationMS intentionally does
+   * NOT stop cyclic operation. Only OFF with DurationMS == 0 stops the running
+   * cycle.
+   *
+   * Disabling cyclic mode completely requires disableCyclicMode().
+   *
+   * Cyclic mode is not supported for timed functions (staircase timer) or
+   * impulse functions (gates, doors and similar functions).
+   */
   void enableCyclicMode(uint32_t turnOnTimeMs, uint32_t turnOffTimeMs);
   void disableCyclicMode();
   bool isCyclicMode() const;
 
+  bool isWeeklyScheduleSupported() const;
+  Relay &setWeeklyScheduleAvailable(bool available = true);
+  bool isWeeklyScheduleAvailable() const;
+  Relay &setAutomaticModeSupported(bool supported = true);
+  bool isAutomaticModeSupported() const;
+  bool isAutomaticMode() const;
+  bool setAutomaticMode(bool enabled);
+  bool setWeeklyScheduleController(
+      WeeklyScheduleController *controller,
+      WeeklyScheduleConfigHandler *configHandler = nullptr,
+      WeeklyScheduleProgramSource *programSource = nullptr);
+
  protected:
+  Relay(Supla::Io::IoPin outputPin,
+        _supla_int_t functions,
+        Supla::Channel &externalChannel,
+        ElementMode mode);
+
   struct ButtonListElement {
     Supla::Control::Button *button = nullptr;
     ButtonListElement *next = nullptr;
   };
 
-  void applyDuration(int durationMs, bool turnOn);
+  void applyDuration(int32_t durationMs, bool turnOn);
+  void setOvercurrentThreshold(uint32_t value, bool local);
 
   virtual void setNewChannelValue(bool value);
+  virtual void fillDefaultWeeklySchedule(
+      TChannelConfig_WeeklySchedule *schedule);
+  virtual bool canUseWeeklySchedule() const;
+  // Registration capability. Overrides must not depend on the function
+  // currently selected on the server.
+  virtual bool isWeeklyScheduleProgramModeSupported(uint8_t mode) const;
+  bool isWeeklyScheduleProgramModeAvailable(uint8_t mode) const;
+  // Runtime applicability after the server-selected function is known.
+  bool isWeeklyScheduleProgramModeApplicable(uint8_t mode) const;
+  bool hasAnyWeeklyScheduleProgramModeAvailable() const;
+  virtual void iterateAutomaticMode();
 
   void saveConfig() const;
+  void loadRelayConfigOnly();
+  bool ensureNativeWeeklyScheduleController();
+  void updateWeeklyScheduleCapabilities();
+  void updateAutomaticModeCapability();
+  void purgeRelayConfigOnly();
   void updateTimerValue();
+  void emitCountdownTimerActionIfNeeded();
   void updateRelayHvacAggregator();
+  bool isManualActionAllowed(bool turnOn) const;
+  bool isManualForcedModeSupported(uint8_t mode) const;
+  bool setManualForcedMode(uint8_t mode);
+  void disableWeeklySchedule();
+  void applyWeeklyScheduleProgram(uint8_t programMode, bool programChanged);
+  virtual bool applyWeeklyScheduleState(bool on);
+  void notifyWeeklyScheduleManualAction();
   uint32_t durationMs = 0;
   uint32_t storedTurnOnDurationMs = 0;
   uint32_t durationTimestamp = 0;
@@ -213,6 +308,7 @@ class Relay : public ChannelElement, public ActionHandler {
   uint32_t overcurrentCheckTimestamp = 0;
 
   uint32_t timerUpdateTimestamp = 0;
+  uint32_t lastCountdownTimerRemainingSec = UINT32_MAX;
   uint32_t postponeCommTimestamp = 0;
 
   ButtonListElement *buttonList = nullptr;
@@ -220,16 +316,40 @@ class Relay : public ChannelElement, public ActionHandler {
   uint16_t minimumAllowedDurationMs = 0;
   int16_t defaultRelatedMeterChannelNo = -1;
 
-  bool keepTurnOnDurationMs = false;
-  bool turnOffWhenEmptyAggregator = true;
-  bool initDone = false;
-  bool restartTimerOnToggle = false;
-  bool skipInitialStateSetting = false;
+  // Runtime-only flags; state storage uses a separate representation.
+  struct RuntimeFlags {
+    RuntimeFlags()
+        : keepTurnOnDurationMs(false),
+          turnOffWhenEmptyAggregator(true),
+          initDone(false),
+          restartTimerOnToggle(false),
+          skipInitialStateSetting(false),
+          preloadStateOnSoftReset(false),
+          automaticModeSupported(false),
+          weeklyScheduleAvailable(false) {}
+
+    uint8_t keepTurnOnDurationMs : 1;
+    uint8_t turnOffWhenEmptyAggregator : 1;
+    uint8_t initDone : 1;
+    uint8_t restartTimerOnToggle : 1;
+    uint8_t skipInitialStateSetting : 1;
+    uint8_t preloadStateOnSoftReset : 1;
+    uint8_t automaticModeSupported : 1;
+    // Native weekly schedule remains opt-in.
+    uint8_t weeklyScheduleAvailable : 1;
+  };
+
+  static_assert(sizeof(RuntimeFlags) == sizeof(uint8_t),
+                "Relay runtime flags must fit in uint8_t");
+
+  RuntimeFlags runtimeFlags;
 
   int8_t stateOnInit = STATE_ON_INIT_OFF;
+  bool timerTargetOn = false;
   Supla::Io::IoPin outputPin;
+  WeeklyScheduleComponents weeklyScheduleComponents;
 
-  static int16_t relayStorageSaveDelay;
+  static uint16_t relayStorageSaveDelay;
 };
 
 };  // namespace Control

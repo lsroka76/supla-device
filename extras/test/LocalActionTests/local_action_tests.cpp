@@ -1,23 +1,12 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <supla/local_action.h>
 #include <supla/action_handler.h>
+#include <supla/control/virtual_relay.h>
+#include <supla/events.h>
 
 class ActionHandlerMock : public Supla::ActionHandler {
  public:
@@ -179,4 +168,84 @@ TEST(LocalActionTests, FourItemsTestsWithCalls) {
   delete b2;
   delete b3;
   delete b4;
+}
+
+TEST(LocalActionTests, ConfigModeDisableRestoresOnlyPreviouslyEnabledActions) {
+  Supla::LocalAction trigger;
+  ActionHandlerMock enabledHandler;
+  ActionHandlerMock disabledHandler;
+  ActionHandlerMock alwaysEnabledHandler;
+  constexpr int event = 11;
+
+  trigger.addAction(1, enabledHandler, event);
+  trigger.addAction(2, disabledHandler, event);
+  trigger.addAction(3, alwaysEnabledHandler, event, true);
+
+  auto enabledClient = trigger.getHandlerForClient(&enabledHandler, event);
+  auto disabledClient = trigger.getHandlerForClient(&disabledHandler, event);
+  auto alwaysEnabledClient =
+      trigger.getHandlerForClient(&alwaysEnabledHandler, event);
+  ASSERT_NE(enabledClient, nullptr);
+  ASSERT_NE(disabledClient, nullptr);
+  ASSERT_NE(alwaysEnabledClient, nullptr);
+
+  disabledClient->disable();
+  enabledClient->disableForConfigMode();
+  disabledClient->disableForConfigMode();
+  alwaysEnabledClient->disableForConfigMode();
+
+  EXPECT_FALSE(enabledClient->isEnabled());
+  EXPECT_FALSE(disabledClient->isEnabled());
+  EXPECT_TRUE(alwaysEnabledClient->isEnabled());
+
+  enabledClient->restoreAfterConfigMode();
+  disabledClient->restoreAfterConfigMode();
+  alwaysEnabledClient->restoreAfterConfigMode();
+
+  EXPECT_TRUE(enabledClient->isEnabled());
+  EXPECT_FALSE(disabledClient->isEnabled());
+  EXPECT_TRUE(alwaysEnabledClient->isEnabled());
+}
+
+TEST(LocalActionTests, AllowListIsAdditionalAndEmptyListBlocksAllActions) {
+  Supla::LocalAction trigger;
+  ActionHandlerMock output;
+  ActionHandlerMock unlock;
+  ActionHandlerMock alwaysEnabled;
+
+  trigger.addAction(10, output, 1);
+  trigger.addAction(11, unlock, 1);
+  trigger.addAction(12, alwaysEnabled, 1, true);
+
+  EXPECT_CALL(output, handleAction(1, 10)).Times(1);
+  EXPECT_CALL(unlock, handleAction(1, 11)).Times(1);
+  EXPECT_CALL(alwaysEnabled, handleAction(1, 12)).Times(1);
+  trigger.runAction(1);
+
+  testing::Mock::VerifyAndClearExpectations(&output);
+  testing::Mock::VerifyAndClearExpectations(&unlock);
+  testing::Mock::VerifyAndClearExpectations(&alwaysEnabled);
+
+  EXPECT_CALL(output, handleAction).Times(0);
+  EXPECT_CALL(unlock, handleAction(1, 11));
+  EXPECT_CALL(alwaysEnabled, handleAction).Times(0);
+  trigger.runAction(1, {11});
+
+  testing::Mock::VerifyAndClearExpectations(&output);
+  testing::Mock::VerifyAndClearExpectations(&unlock);
+  testing::Mock::VerifyAndClearExpectations(&alwaysEnabled);
+  EXPECT_CALL(output, handleAction).Times(0);
+  EXPECT_CALL(unlock, handleAction).Times(0);
+  EXPECT_CALL(alwaysEnabled, handleAction).Times(0);
+  trigger.runAction(1, {});
+}
+
+TEST(LocalActionTests, AllowListIsForwardedThroughChannelActionElements) {
+  Supla::Control::VirtualRelay relay;
+  ActionHandlerMock output;
+  relay.addAction(10, output, Supla::ON_TURN_ON);
+
+  EXPECT_CALL(output, handleAction(Supla::ON_TURN_ON, 10)).Times(2);
+  relay.runAction(Supla::ON_TURN_ON);
+  relay.runAction(Supla::ON_TURN_ON, {10});
 }

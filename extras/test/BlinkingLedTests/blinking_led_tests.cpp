@@ -1,23 +1,9 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
-
-#include <gmock/gmock.h>
-#include <gtest/gtest.h>
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <arduino_mock.h>
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
 #include <supla/control/blinking_led.h>
 #include <supla_io_mock.h>
 
@@ -27,6 +13,7 @@ TEST(BlinkingLedTests, IoPinConstructorUsesSeparateIoAndOutputPolarity) {
   SuplaIoMock io;
   TimeInterfaceMock timeMock;
   TimeInterface::instance = &timeMock;
+  EXPECT_CALL(timeMock, millis()).WillRepeatedly(Return(0));
 
   ::testing::InSequence seq;
   EXPECT_CALL(io, customDigitalWrite(-1, 7, LOW)).Times(1);
@@ -40,6 +27,7 @@ TEST(BlinkingLedTests, IoPinConstructorSupportsInputPolarityForLegacyInvert) {
   SuplaIoMock io;
   TimeInterfaceMock timeMock;
   TimeInterface::instance = &timeMock;
+  EXPECT_CALL(timeMock, millis()).WillRepeatedly(Return(0));
 
   ::testing::InSequence seq;
   EXPECT_CALL(io, customDigitalWrite(-1, 7, HIGH)).Times(1);
@@ -47,4 +35,81 @@ TEST(BlinkingLedTests, IoPinConstructorSupportsInputPolarityForLegacyInvert) {
 
   Supla::Control::BlinkingLed led(Supla::Io::IoPin(7, &io), true);
   led.onInit();
+}
+
+class BlinkingLedCopyTests : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    TimeInterface::instance = &timeMock;
+    EXPECT_CALL(timeMock, millis()).WillRepeatedly(Return(0));
+    EXPECT_CALL(io, customDigitalWrite(-1, testing::_, testing::_))
+        .Times(testing::AnyNumber());
+  }
+
+  SuplaIoMock io;
+  TimeInterfaceMock timeMock;
+};
+
+TEST_F(BlinkingLedCopyTests, SelfCopyIsRejectedAndKeepsExistingCopy) {
+  Supla::Control::BlinkingLed first(Supla::Io::IoPin(1, &io));
+  Supla::Control::BlinkingLed second(Supla::Io::IoPin(2, &io));
+
+  first.setCopyStateTo(&second);
+  first.setCopyStateTo(&first);
+  EXPECT_CALL(io, customDigitalWrite(-1, 2, HIGH)).Times(testing::AtLeast(1));
+
+  first.setAlwaysOnSequence();
+}
+
+TEST_F(BlinkingLedCopyTests, TwoLedCycleIsRejected) {
+  Supla::Control::BlinkingLed first(Supla::Io::IoPin(1, &io));
+  Supla::Control::BlinkingLed second(Supla::Io::IoPin(2, &io));
+
+  first.setCopyStateTo(&second);
+  second.setCopyStateTo(&first);
+  EXPECT_CALL(io, customDigitalWrite(-1, 2, HIGH)).Times(testing::AtLeast(1));
+
+  first.setAlwaysOnSequence();
+  second.setAlwaysOnSequence();
+}
+
+TEST_F(BlinkingLedCopyTests, ThreeLedCycleIsRejected) {
+  Supla::Control::BlinkingLed first(Supla::Io::IoPin(1, &io));
+  Supla::Control::BlinkingLed second(Supla::Io::IoPin(2, &io));
+  Supla::Control::BlinkingLed third(Supla::Io::IoPin(3, &io));
+
+  first.setCopyStateTo(&second);
+  second.setCopyStateTo(&third);
+  third.setCopyStateTo(&first);
+  EXPECT_CALL(io, customDigitalWrite(-1, 3, HIGH)).Times(testing::AtLeast(1));
+
+  first.setAlwaysOnSequence();
+  third.setAlwaysOnSequence();
+}
+
+TEST_F(BlinkingLedCopyTests, AcyclicChainPropagatesLedState) {
+  Supla::Control::BlinkingLed first(Supla::Io::IoPin(1, &io));
+  Supla::Control::BlinkingLed second(Supla::Io::IoPin(2, &io));
+  Supla::Control::BlinkingLed third(Supla::Io::IoPin(3, &io));
+
+  first.setCopyStateTo(&second);
+  second.setCopyStateTo(&third);
+  EXPECT_CALL(io, customDigitalWrite(-1, 2, HIGH)).Times(testing::AtLeast(1));
+  EXPECT_CALL(io, customDigitalWrite(-1, 3, HIGH)).Times(testing::AtLeast(1));
+  EXPECT_CALL(io, customDigitalWrite(-1, 2, LOW)).Times(testing::AtLeast(1));
+  EXPECT_CALL(io, customDigitalWrite(-1, 3, LOW)).Times(testing::AtLeast(1));
+
+  first.setAlwaysOnSequence();
+  first.setAlwaysOffSequence();
+}
+
+TEST_F(BlinkingLedCopyTests, NullCopyTargetStopsStatePropagation) {
+  Supla::Control::BlinkingLed first(Supla::Io::IoPin(1, &io));
+  Supla::Control::BlinkingLed second(Supla::Io::IoPin(2, &io));
+
+  first.setCopyStateTo(&second);
+  first.setCopyStateTo(nullptr);
+  EXPECT_CALL(io, customDigitalWrite(-1, 2, testing::_)).Times(0);
+
+  first.setAlwaysOnSequence();
 }

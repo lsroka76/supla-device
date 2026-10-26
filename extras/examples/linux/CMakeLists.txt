@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.15)
 
 project(supla-device-linux LANGUAGES C CXX)
 
-set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -26,14 +26,22 @@ include(${SUPLA_DEVICE_PATH}/extras/porting/linux/SuplaLinux.cmake)
 
 add_library(supladevicelib STATIC)
 add_library(suplalinuxlib STATIC)
-add_executable(supla-device-linux main.cpp)
+add_executable(supla-device-linux main.cpp debug_socket.cpp)
 
 supla_device(supladevicelib)
 supla_common(supladevicelib)
 supla_linux(suplalinuxlib)
 
-target_compile_definitions(supladevicelib PRIVATE SUPLA_LINUX)
-target_compile_definitions(supla-device-linux PRIVATE MQTT_USE_BIO)
+target_compile_definitions(supladevicelib PRIVATE
+  SUPLA_LINUX
+  SUPLA_SUPLET_ENABLED=1
+  SUPLA_INSECURE_DEBUG_INTERFACE=1
+)
+target_compile_definitions(supla-device-linux PRIVATE
+  MQTT_USE_BIO
+  SUPLA_SUPLET_ENABLED=1
+  SUPLA_INSECURE_DEBUG_INTERFACE=1
+)
 
 target_include_directories(supladevicelib PUBLIC
   "${SUPLA_DEVICE_PATH}/src"
@@ -45,6 +53,7 @@ target_include_directories(suplalinuxlib PUBLIC
   "${SUPLA_DEVICE_PATH}/extras/porting/linux"
 )
 
+target_link_libraries(supladevicelib PRIVATE OpenSSL::Crypto)
 target_link_libraries(suplalinuxlib PUBLIC supladevicelib)
 target_link_libraries(supla-device-linux PRIVATE supladevicelib suplalinuxlib)
 

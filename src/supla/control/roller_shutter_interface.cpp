@@ -1,20 +1,5 @@
-/*
-   Copyright (C) AC SOFTWARE SP. Z O.O
-
-   This program is free software; you can redistribute it and/or
-   modify it under the terms of the GNU General Public License
-   as published by the Free Software Foundation; either version 2
-   of the License, or (at your option) any later version.
-
-   This program is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
-
-   You should have received a copy of the GNU General Public License
-   along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "roller_shutter_interface.h"
 
@@ -39,6 +24,58 @@ int16_t RollerShutterInterface::rsStorageSaveDelay = 5000;
 #define RS_FLAG_CALIBRATION_FAILED (1 << 2)
 #define RS_FLAG_MOTOR_PROBLEM      (1 << 3)
 
+namespace {
+
+uint32_t ClampRsMotionTime(uint32_t requestedTimeMs,
+                           const char *timeLabel,
+                           int channelNumber) {
+  (void)(timeLabel);
+  (void)(channelNumber);
+  if (requestedTimeMs > RS_MAX_OPERATION_TIME_MS) {
+    SUPLA_LOG_WARNING(
+        "RS[%d] %s %u ms exceeds maximum %u ms, clamping",
+        channelNumber,
+        timeLabel,
+        static_cast<unsigned>(requestedTimeMs),
+        static_cast<unsigned>(RS_MAX_OPERATION_TIME_MS));
+    return RS_MAX_OPERATION_TIME_MS;
+  }
+  return requestedTimeMs;
+}
+
+}  // namespace
+
+bool Supla::Control::isValidTiltControlType(uint32_t type) {
+  return type <= SUPLA_TILT_CONTROL_TYPE_TILTS_ONLY_WHEN_FULLY_CLOSED;
+}
+
+bool Supla::Control::isValidTiltAngle(uint32_t angle) {
+  return angle <= MAX_TILT_ANGLE_DEGREES;
+}
+
+bool Supla::Control::requiresSeparateTiltPhase(uint8_t type) {
+  return type == SUPLA_TILT_CONTROL_TYPE_STANDS_IN_POSITION_WHILE_TILTING ||
+         type == SUPLA_TILT_CONTROL_TYPE_TILTS_ONLY_WHEN_FULLY_CLOSED;
+}
+
+bool Supla::Control::isValidFacadeBlindTiming(uint8_t type,
+                                              uint32_t openingTimeMs,
+                                              uint32_t closingTimeMs,
+                                              uint32_t tiltingTimeMs) {
+  if (!isValidTiltControlType(type) ||
+      openingTimeMs > RS_MAX_OPERATION_TIME_MS ||
+      closingTimeMs > RS_MAX_OPERATION_TIME_MS ||
+      tiltingTimeMs > RS_MAX_OPERATION_TIME_MS) {
+    return false;
+  }
+
+  if (tiltingTimeMs > 0 && requiresSeparateTiltPhase(type)) {
+    return tiltingTimeMs < openingTimeMs && tiltingTimeMs < closingTimeMs;
+  }
+
+  return true;
+}
+
 #pragma pack(push, 1)
 struct RollerShutterStateData {
   uint32_t closingTimeMs = 0;
@@ -55,6 +92,25 @@ struct RollerShutterWithTiltStateData {
 #pragma pack(pop)
 
 RollerShutterInterface::RollerShutterInterface(bool tiltFunctionsSupported) {
+  channel.setType(SUPLA_CHANNELTYPE_RELAY);
+  channel.setFuncList(SUPLA_BIT_FUNC_CONTROLLINGTHEROLLERSHUTTER |
+                      SUPLA_BIT_FUNC_CONTROLLINGTHEROOFWINDOW |
+                      SUPLA_BIT_FUNC_TERRACE_AWNING |
+                      SUPLA_BIT_FUNC_ROLLER_GARAGE_DOOR |
+                      SUPLA_BIT_FUNC_CURTAIN | SUPLA_BIT_FUNC_PROJECTOR_SCREEN);
+  if (tiltFunctionsSupported) {
+    addTiltFunctions();
+  }
+  channel.setDefaultFunction(SUPLA_CHANNELFNC_CONTROLLINGTHEROLLERSHUTTER);
+  channel.setFlag(SUPLA_CHANNEL_FLAG_RUNTIME_CHANNEL_CONFIG_UPDATE);
+  usedConfigTypes.set(SUPLA_CONFIG_TYPE_DEFAULT);
+}
+
+RollerShutterInterface::RollerShutterInterface(
+    bool tiltFunctionsSupported,
+    Supla::Channel &externalChannel,
+    ElementMode mode)
+    : ChannelElement(externalChannel, mode) {
   channel.setType(SUPLA_CHANNELTYPE_RELAY);
   channel.setFuncList(SUPLA_BIT_FUNC_CONTROLLINGTHEROLLERSHUTTER |
                       SUPLA_BIT_FUNC_CONTROLLINGTHEROOFWINDOW |
@@ -139,14 +195,15 @@ int32_t RollerShutterInterface::handleNewValueFromServer(
   uint32_t newClosingTime = (newValue->DurationMS & 0xFFFF) * 100;
   uint32_t newOpeningTime = ((newValue->DurationMS >> 16) & 0xFFFF) * 100;
 
-  setOpenCloseTime(newClosingTime, newOpeningTime);
-
   int8_t task = newValue->value[0];
   int8_t tilt = newValue->value[1];
   SUPLA_LOG_INFO("RS[%d] new value from server: position/task %d, tilt %d",
                  channel.getChannelNumber(),
                  task,
                  tilt);
+  if (task != UNKNOWN_POSITION) {
+    setOpenCloseTime(newClosingTime, newOpeningTime);
+  }
   switch (task) {
     case 0: {
       stop();
@@ -211,7 +268,11 @@ int32_t RollerShutterInterface::handleNewValueFromServer(
       if (task >= 10 && task <= 110) {
         setTargetPosition(task - 10, tilt);
       } else if (task == UNKNOWN_POSITION) {
-        setTargetPosition(UNKNOWN_POSITION, tilt);
+        if (canExecuteTiltOnlyCommand(tilt)) {
+          setTargetPosition(UNKNOWN_POSITION, tilt);
+        } else {
+          logIgnoredTiltOnlyCommand(tilt);
+        }
       }
       break;
     }
@@ -222,6 +283,10 @@ int32_t RollerShutterInterface::handleNewValueFromServer(
 void RollerShutterInterface::setOpenCloseTime(uint32_t newClosingTimeMs,
                                               uint32_t newOpeningTimeMs) {
   if (isTimeSettingAvailable()) {
+    newClosingTimeMs = ClampRsMotionTime(
+        newClosingTimeMs, "closing time", channel.getChannelNumber());
+    newOpeningTimeMs = ClampRsMotionTime(
+        newOpeningTimeMs, "opening time", channel.getChannelNumber());
     if (newClosingTimeMs != closingTimeMs ||
         newOpeningTimeMs != openingTimeMs) {
       closingTimeMs = newClosingTimeMs;
@@ -240,6 +305,8 @@ void RollerShutterInterface::setOpenCloseTime(uint32_t newClosingTimeMs,
 void RollerShutterInterface::setTiltingTime(uint32_t newTiltingTimeMs,
                                             bool local) {
   if (isTimeSettingAvailable()) {
+    newTiltingTimeMs = ClampRsMotionTime(
+        newTiltingTimeMs, "tilting time", channel.getChannelNumber());
     if (newTiltingTimeMs != tiltConfig.tiltingTime) {
       tiltConfig.tiltingTime = newTiltingTimeMs;
       SUPLA_LOG_DEBUG("FB[%d] new tilting time received. Tilting time: %d ms. ",
@@ -264,6 +331,56 @@ void RollerShutterInterface::setTiltControlType(uint8_t newTiltControlType,
       saveConfig();
     }
   }
+}
+
+bool RollerShutterInterface::applyFacadeBlindTimingConfig(
+    uint32_t newOpeningTimeMs,
+    uint32_t newClosingTimeMs,
+    uint32_t newTiltingTimeMs,
+    uint32_t newTiltControlType,
+    bool local) {
+  const bool timeSettingAvailable = isTimeSettingAvailable();
+  const uint32_t effectiveOpeningTimeMs =
+      timeSettingAvailable ? newOpeningTimeMs : openingTimeMs;
+  const uint32_t effectiveClosingTimeMs =
+      timeSettingAvailable ? newClosingTimeMs : closingTimeMs;
+  const uint32_t effectiveTiltingTimeMs =
+      timeSettingAvailable ? newTiltingTimeMs : tiltConfig.tiltingTime;
+
+  if (!isTiltFunctionEnabled() || !isValidTiltControlType(newTiltControlType) ||
+      effectiveOpeningTimeMs > RS_MAX_OPERATION_TIME_MS ||
+      effectiveClosingTimeMs > RS_MAX_OPERATION_TIME_MS ||
+      effectiveTiltingTimeMs > RS_MAX_OPERATION_TIME_MS ||
+      !isValidFacadeBlindTiming(static_cast<uint8_t>(newTiltControlType),
+                                effectiveOpeningTimeMs,
+                                effectiveClosingTimeMs,
+                                effectiveTiltingTimeMs)) {
+    SUPLA_LOG_WARNING("FB[%d] rejecting invalid timing configuration",
+                      channel.getChannelNumber());
+    return false;
+  }
+
+  setOpenCloseTime(effectiveClosingTimeMs, effectiveOpeningTimeMs);
+  setTiltingTime(effectiveTiltingTimeMs, false);
+  setTiltControlType(static_cast<uint8_t>(newTiltControlType), false);
+
+  if (isTiltConfigured()) {
+    if (currentTilt == UNKNOWN_POSITION) {
+      setCurrentPosition(getCurrentPosition(), 0);
+    }
+    if (tiltConfig.tiltControlType ==
+            SUPLA_TILT_CONTROL_TYPE_TILTS_ONLY_WHEN_FULLY_CLOSED &&
+        getCurrentPosition() < 100) {
+      setCurrentPosition(getCurrentPosition(), 0);
+    }
+  } else {
+    setCurrentPosition(getCurrentPosition(), UNKNOWN_POSITION);
+  }
+
+  if (local) {
+    saveConfig();
+  }
+  return true;
 }
 
 void RollerShutterInterface::handleAction(int, int action) {
@@ -353,6 +470,26 @@ void RollerShutterInterface::handleAction(int, int action) {
       break;
     }
 
+    // Stop only the direction requested by the latest directional press.
+    // lastDirection also covers a reversal waiting for the motor interlock.
+    case UP_STOP: {
+      if (lastDirectionWasOpen()) {
+        stop();
+      }
+      break;
+    }
+
+    case INTERNAL_BUTTON_UP_STOP: {
+      if (rsConfig.buttonsUpsideDown == 2) {
+        if (lastDirectionWasClose()) {
+          stop();
+        }
+      } else if (lastDirectionWasOpen()) {
+        stop();
+      }
+      break;
+    }
+
     case MOVE_UP_OR_STOP: {
       if (inMove()) {
         stop();
@@ -386,6 +523,24 @@ void RollerShutterInterface::handleAction(int, int action) {
         stop();
       } else {
         moveDown();
+      }
+      break;
+    }
+
+    case DOWN_STOP: {
+      if (lastDirectionWasClose()) {
+        stop();
+      }
+      break;
+    }
+
+    case INTERNAL_BUTTON_DOWN_STOP: {
+      if (rsConfig.buttonsUpsideDown == 2) {
+        if (lastDirectionWasOpen()) {
+          stop();
+        }
+      } else if (lastDirectionWasClose()) {
+        stop();
       }
       break;
     }
@@ -473,6 +628,13 @@ void RollerShutterInterface::setNotCalibrated() {
 }
 
 void RollerShutterInterface::setTargetPosition(int newPosition, int newTilt) {
+  if (newPosition == UNKNOWN_POSITION &&
+      !canExecuteTiltOnlyCommand(newTilt)) {
+    logIgnoredTiltOnlyCommand(newTilt);
+    return;
+  }
+
+  invalidTiltOnlyCommandWarningLogged = false;
   SUPLA_LOG_DEBUG("RS[%d] set target position: %d, tilt: %d",
                   channel.getChannelNumber(),
                   newPosition,
@@ -538,11 +700,12 @@ bool RollerShutterInterface::isCalibrationRequested() const {
 }
 
 bool RollerShutterInterface::isCalibrated() const {
-  if (isTimeSettingAvailable()) {
-    return !getCalibrate() && openingTimeMs != 0 && closingTimeMs != 0;
-  } else {
-    return !getCalibrate() && currentPosition != UNKNOWN_POSITION;
+  if (getCalibrate() || getCurrentPosition() == UNKNOWN_POSITION) {
+    return false;
   }
+
+  return !isTimeSettingAvailable() ||
+         (openingTimeMs != 0 && closingTimeMs != 0);
 }
 
 bool RollerShutterInterface::isCalibrationInProgress() const {
@@ -631,16 +794,22 @@ void RollerShutterInterface::configComfortDownTiltValue(uint8_t position) {
 }
 
 void RollerShutterInterface::onLoadState() {
+  rollerShutterStateLoaded = false;
   if (isTiltFunctionsSupported()) {
     RollerShutterWithTiltStateData data;
     if (Supla::Storage::ReadState((unsigned char *)&data, sizeof(data))) {
-      closingTimeMs = data.closingTimeMs;
-      openingTimeMs = data.openingTimeMs;
+      rollerShutterStateLoaded = true;
+      closingTimeMs = ClampRsMotionTime(
+          data.closingTimeMs, "closing time", channel.getChannelNumber());
+      openingTimeMs = ClampRsMotionTime(
+          data.openingTimeMs, "opening time", channel.getChannelNumber());
       currentPosition = data.currentPosition * 100;
-      if (currentPosition >= 0) {
+      currentTilt = data.tiltPosition * 100;
+      if (getCurrentPosition() == UNKNOWN_POSITION) {
+        setNotCalibrated();
+      } else {
         setCalibrate(false);
       }
-      currentTilt = data.tiltPosition * 100;
       SUPLA_LOG_DEBUG(
           "RS[%d] settings restored from storage. Opening time: %d "
           "ms; closing time: %d ms. Position: %d, Tilt: %d",
@@ -654,10 +823,15 @@ void RollerShutterInterface::onLoadState() {
   } else {
     RollerShutterStateData data;
     if (Supla::Storage::ReadState((unsigned char *)&data, sizeof(data))) {
-      closingTimeMs = data.closingTimeMs;
-      openingTimeMs = data.openingTimeMs;
+      rollerShutterStateLoaded = true;
+      closingTimeMs = ClampRsMotionTime(
+          data.closingTimeMs, "closing time", channel.getChannelNumber());
+      openingTimeMs = ClampRsMotionTime(
+          data.openingTimeMs, "opening time", channel.getChannelNumber());
       currentPosition = data.currentPosition * 100;
-      if (currentPosition >= 0) {
+      if (getCurrentPosition() == UNKNOWN_POSITION) {
+        setNotCalibrated();
+      } else {
         setCalibrate(false);
       }
       SUPLA_LOG_DEBUG(
@@ -668,6 +842,29 @@ void RollerShutterInterface::onLoadState() {
           closingTimeMs,
           currentPosition);
     }
+  }
+
+  validateTiltConfigAfterLoad();
+}
+
+void RollerShutterInterface::validateTiltConfigAfterLoad() {
+  if (!isTiltFunctionEnabled()) {
+    return;
+  }
+
+  if (!isValidTiltControlType(tiltConfig.tiltControlType) ||
+      !isValidTiltAngle(tiltConfig.tilt0Angle) ||
+      !isValidTiltAngle(tiltConfig.tilt100Angle) ||
+      (rollerShutterStateLoaded &&
+       !isValidFacadeBlindTiming(tiltConfig.tiltControlType,
+                                 openingTimeMs,
+                                 closingTimeMs,
+                                 tiltConfig.tiltingTime))) {
+    SUPLA_LOG_WARNING(
+        "FB[%d] invalid stored tilt configuration, disabling tilt",
+        channel.getChannelNumber());
+    tiltConfig.clear();
+    saveConfig();
   }
 }
 
@@ -854,8 +1051,7 @@ Supla::ApplyConfigResult RollerShutterInterface::applyChannelConfig(
         if (rsConfig.timeMargin > 101) {
           rsConfig.timeMargin = 101;
         }
-        // cleanup tilt config for standard RS functions
-        tiltConfig.clear();
+        clearTiltConfig();
         saveConfig();
         printConfig();
       }
@@ -867,52 +1063,83 @@ Supla::ApplyConfigResult RollerShutterInterface::applyChannelConfig(
           result->ConfigSize == sizeof(TChannelConfig_FacadeBlind)) {
         auto newConfig =
             reinterpret_cast<TChannelConfig_FacadeBlind *>(result->Config);
-        if (newConfig->OpeningTimeMS >= 0 && newConfig->ClosingTimeMS >= 0) {
-          setOpenCloseTime(newConfig->ClosingTimeMS, newConfig->OpeningTimeMS);
-        }
-        if (newConfig->TiltingTimeMS >= 0) {
-          setTiltingTime(newConfig->TiltingTimeMS, false);
-        }
-        tiltConfig.tilt0Angle = newConfig->Tilt0Angle;
-        tiltConfig.tilt100Angle = newConfig->Tilt100Angle;
-        tiltConfig.tiltControlType = newConfig->TiltControlType;
+        const bool timeSettingAvailable = isTimeSettingAvailable();
+        const uint32_t candidateOpeningTimeMs =
+            timeSettingAvailable && newConfig->OpeningTimeMS >= 0
+                ? static_cast<uint32_t>(newConfig->OpeningTimeMS)
+                : openingTimeMs;
+        const uint32_t candidateClosingTimeMs =
+            timeSettingAvailable && newConfig->ClosingTimeMS >= 0
+                ? static_cast<uint32_t>(newConfig->ClosingTimeMS)
+                : closingTimeMs;
+        const uint32_t candidateTiltingTimeMs =
+            timeSettingAvailable && newConfig->TiltingTimeMS >= 0
+                ? static_cast<uint32_t>(newConfig->TiltingTimeMS)
+                : tiltConfig.tiltingTime;
+        const uint32_t candidateTiltControlType = newConfig->TiltControlType;
 
-        if (!inMove()) {
-          setTargetPosition(STOP_REQUEST);
+        if (!isValidTiltControlType(candidateTiltControlType) ||
+            !isValidTiltAngle(newConfig->Tilt0Angle) ||
+            !isValidTiltAngle(newConfig->Tilt100Angle) ||
+            !isValidFacadeBlindTiming(
+                static_cast<uint8_t>(candidateTiltControlType),
+                candidateOpeningTimeMs,
+                candidateClosingTimeMs,
+                candidateTiltingTimeMs)) {
+          SUPLA_LOG_WARNING("FB[%d] rejecting invalid server configuration",
+                            channel.getChannelNumber());
+          return Supla::ApplyConfigResult::DataError;
         }
+
+        TiltConfig candidateTiltConfig = tiltConfig;
+        candidateTiltConfig.tiltingTime = candidateTiltingTimeMs;
+        candidateTiltConfig.tilt0Angle = newConfig->Tilt0Angle;
+        candidateTiltConfig.tilt100Angle = newConfig->Tilt100Angle;
+        candidateTiltConfig.tiltControlType =
+            static_cast<uint8_t>(candidateTiltControlType);
+
+        RollerShutterConfig candidateRsConfig = rsConfig;
         if (rsConfig.buttonsUpsideDown != 0) {
           if (newConfig->ButtonsUpsideDown > 0) {
-            rsConfig.buttonsUpsideDown = newConfig->ButtonsUpsideDown;
+            candidateRsConfig.buttonsUpsideDown = newConfig->ButtonsUpsideDown;
           } else {
             setChannelConfigNeeded = true;
           }
         }
         if (rsConfig.motorUpsideDown != 0) {
           if (newConfig->MotorUpsideDown > 0) {
-            rsConfig.motorUpsideDown = newConfig->MotorUpsideDown;
+            candidateRsConfig.motorUpsideDown = newConfig->MotorUpsideDown;
           } else {
             setChannelConfigNeeded = true;
           }
         }
         if (rsConfig.timeMargin != 0) {
           if (newConfig->TimeMargin != 0) {
-            rsConfig.timeMargin = newConfig->TimeMargin;
+            candidateRsConfig.timeMargin = newConfig->TimeMargin;
           } else {
             setChannelConfigNeeded = true;
           }
         }
-        rsConfig.visualizationType = newConfig->VisualizationType;
-        if (rsConfig.buttonsUpsideDown > 2) {
-          rsConfig.buttonsUpsideDown = 1;
+        candidateRsConfig.visualizationType = newConfig->VisualizationType;
+        if (candidateRsConfig.buttonsUpsideDown > 2) {
+          candidateRsConfig.buttonsUpsideDown = 1;
         }
-        if (rsConfig.motorUpsideDown > 2) {
-          rsConfig.motorUpsideDown = 1;
+        if (candidateRsConfig.motorUpsideDown > 2) {
+          candidateRsConfig.motorUpsideDown = 1;
         }
-        if (rsConfig.timeMargin < -1) {
-          rsConfig.timeMargin = -1;
+        if (candidateRsConfig.timeMargin < -1) {
+          candidateRsConfig.timeMargin = -1;
         }
-        if (rsConfig.timeMargin > 101) {
-          rsConfig.timeMargin = 101;
+        if (candidateRsConfig.timeMargin > 101) {
+          candidateRsConfig.timeMargin = 101;
+        }
+
+        setOpenCloseTime(candidateClosingTimeMs, candidateOpeningTimeMs);
+        tiltConfig = candidateTiltConfig;
+        rsConfig = candidateRsConfig;
+
+        if (!inMove()) {
+          setTargetPosition(STOP_REQUEST);
         }
         if (isTiltConfigured()) {
           if (currentTilt == UNKNOWN_POSITION) {
@@ -934,8 +1161,7 @@ Supla::ApplyConfigResult RollerShutterInterface::applyChannelConfig(
 
     default: {
       SUPLA_LOG_WARNING("RS[%d] Ignoring unsupported channel function %d",
-                        getChannelNumber(),
-                        result->Func);
+                        getChannelNumber(), result->Func);
       break;
     }
   }
@@ -946,11 +1172,17 @@ Supla::ApplyConfigResult RollerShutterInterface::applyChannelConfig(
 
 void RollerShutterInterface::onLoadConfig(SuplaDeviceClass *) {
   auto cfg = Supla::Storage::ConfigInstance();
-  bool print = false;
   if (cfg) {
     loadFunctionFromConfig();
     loadConfigChangeFlag();
+    loadRollerShutterConfigOnly();
+  }
+}
 
+void RollerShutterInterface::loadRollerShutterConfigOnly() {
+  auto cfg = Supla::Storage::ConfigInstance();
+  bool print = false;
+  if (cfg) {
     char key[SUPLA_CONFIG_MAX_KEY_SIZE] = {};
     // RollerShutter config is common for all roller shutter and facade blind
     // functions
@@ -978,6 +1210,8 @@ void RollerShutterInterface::onLoadConfig(SuplaDeviceClass *) {
       generateKey(key, Supla::ConfigTag::TiltConfigTag);
       if (cfg->getBlob(
               key, reinterpret_cast<char *>(&tiltConfig), sizeof(TiltConfig))) {
+        tiltConfig.tiltingTime = ClampRsMotionTime(
+            tiltConfig.tiltingTime, "tilting time", channel.getChannelNumber());
         print = true;
       } else {
         SUPLA_LOG_DEBUG("FB[%d] using default config", getChannelNumber());
@@ -1023,6 +1257,18 @@ void RollerShutterInterface::printConfig() const {
             ? "STANDS_IN_POSITION_WHILE_TILTING"
             : "UNKNOWN",
         tiltConfig.tiltControlType);
+  }
+}
+
+void RollerShutterInterface::clearTiltConfig() {
+  tiltConfig.clear();
+  auto cfg = Supla::Storage::ConfigInstance();
+  if (cfg) {
+    char key[SUPLA_CONFIG_MAX_KEY_SIZE] = {};
+    generateKey(key, Supla::ConfigTag::TiltConfigTag);
+    if (cfg->eraseKey(key)) {
+      cfg->saveWithDelay(2000);
+    }
   }
 }
 
@@ -1109,9 +1355,10 @@ void RollerShutterInterface::fillChannelConfig(void *channelConfig,
       break;
     }
     default:
-      SUPLA_LOG_WARNING("RS[%d] fill channel config for unknown function %d",
-                        channel.getChannelNumber(),
-                        channel.getDefaultFunction());
+      SUPLA_LOG_WARNING(
+          "RS[%d] fill channel config for unknown function %d",
+          channel.getChannelNumber(),
+          channel.getDefaultFunction());
       return;
   }
 }
@@ -1214,6 +1461,10 @@ void RollerShutterInterface::setRsConfigTimeMarginValue(int8_t value) {
 
 void RollerShutterInterface::purgeConfig() {
   Supla::ChannelElement::purgeConfig();
+  purgeRollerShutterConfigOnly();
+}
+
+void RollerShutterInterface::purgeRollerShutterConfigOnly() {
   auto cfg = Supla::Storage::ConfigInstance();
   if (cfg) {
     char key[SUPLA_CONFIG_MAX_KEY_SIZE] = {};
@@ -1292,10 +1543,14 @@ void RollerShutterInterface::setupButtonActions(Supla::Control::Button *button,
         button->addAction(Supla::STOP, this, Supla::ON_HOLD_RELEASE);
       }
     } else if (button->isBistable()) {
-      button->addAction(asInternal ? Supla::INTERNAL_BUTTON_MOVE_UP_OR_STOP
-                                   : Supla::MOVE_UP_OR_STOP,
+      button->addAction(asInternal ? Supla::INTERNAL_BUTTON_MOVE_UP
+                                   : Supla::MOVE_UP,
                         this,
-                        Supla::CONDITIONAL_ON_CHANGE);
+                        Supla::CONDITIONAL_ON_PRESS);
+      button->addAction(asInternal ? Supla::INTERNAL_BUTTON_UP_STOP
+                                   : Supla::UP_STOP,
+                        this,
+                        Supla::CONDITIONAL_ON_RELEASE);
     } else if (button->isCentral()) {
       button->addAction(Supla::OPEN, this, Supla::ON_PRESS);
     }
@@ -1319,10 +1574,14 @@ void RollerShutterInterface::setupButtonActions(Supla::Control::Button *button,
         button->addAction(Supla::STOP, this, Supla::ON_HOLD_RELEASE);
       }
     } else if (button->isBistable()) {
-      button->addAction(asInternal ? Supla::INTERNAL_BUTTON_MOVE_DOWN_OR_STOP
-                                   : Supla::MOVE_DOWN_OR_STOP,
+      button->addAction(asInternal ? Supla::INTERNAL_BUTTON_MOVE_DOWN
+                                   : Supla::MOVE_DOWN,
                         this,
-                        Supla::CONDITIONAL_ON_CHANGE);
+                        Supla::CONDITIONAL_ON_PRESS);
+      button->addAction(asInternal ? Supla::INTERNAL_BUTTON_DOWN_STOP
+                                   : Supla::DOWN_STOP,
+                        this,
+                        Supla::CONDITIONAL_ON_RELEASE);
     } else if (button->isCentral()) {
       button->addAction(Supla::CLOSE, this, Supla::ON_PRESS);
     }
@@ -1355,23 +1614,38 @@ void Supla::Control::TiltConfig::clear() {
 
 bool RollerShutterInterface::isTiltConfigured() const {
   return isTiltFunctionEnabled() && tiltConfig.tiltingTime > 0 &&
-         tiltConfig.tiltControlType != 0;
+         tiltConfig.tiltControlType != SUPLA_TILT_CONTROL_TYPE_UNKNOWN &&
+         isValidTiltControlType(tiltConfig.tiltControlType) &&
+         isValidFacadeBlindTiming(tiltConfig.tiltControlType,
+                                  openingTimeMs,
+                                  closingTimeMs,
+                                  tiltConfig.tiltingTime);
+}
+
+bool RollerShutterInterface::canExecuteTiltOnlyCommand(int tilt) const {
+  return tilt >= 0 && tilt <= 100 && isTiltConfigured() &&
+         getCurrentTilt() != UNKNOWN_POSITION &&
+         getCurrentPosition() != UNKNOWN_POSITION && isCalibrated();
+}
+
+void RollerShutterInterface::logIgnoredTiltOnlyCommand(int tilt) {
+  if (!invalidTiltOnlyCommandWarningLogged) {
+    SUPLA_LOG_WARNING(
+        "RS[%d] ignoring unsafe tilt-only command, tilt: %d",
+        channel.getChannelNumber(),
+        tilt);
+    invalidTiltOnlyCommandWarningLogged = true;
+  }
 }
 
 bool RollerShutterInterface::isTopReached() const {
   bool posTop = (currentPosition == 0);
-  bool tiltTop = !isTiltFunctionEnabled();
-  if (!tiltTop) {
-    tiltTop = isTiltConfigured() && (currentTilt == 0);
-  }
+  bool tiltTop = !isTiltConfigured() || currentTilt == 0;
   return posTop && tiltTop;
 }
 
 bool RollerShutterInterface::isBottomReached() const {
   bool posBottom = (currentPosition == 10000);
-  bool tiltBottom = !isTiltFunctionEnabled();
-  if (!tiltBottom) {
-    tiltBottom = isTiltConfigured() && (currentTilt == 10000);
-  }
+  bool tiltBottom = !isTiltConfigured() || currentTilt == 10000;
   return posBottom && tiltBottom;
 }

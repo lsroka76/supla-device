@@ -1,20 +1,5 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
-
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
-
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #ifndef EXTRAS_PORTING_LINUX_SUPLA_SENSOR_SENSOR_PARSED_H_
 #define EXTRAS_PORTING_LINUX_SUPLA_SENSOR_SENSOR_PARSED_H_
@@ -38,6 +23,9 @@ class ActionTriggerParsed;
 namespace Sensor {
 const char BatteryLevel[] = "battery_level";
 const char BatteryPowered[] = "battery_powered";
+const char BatteryState[] = "battery_state";
+const char BatteryStateAppliesToWholeDevice[] =
+"battery_state_applies_to_whole_device";
 const char ForceBatteryPowered[] = "force_battery_powered";
 const char MultiplierBatteryLevel[] = "multiplier_battery_level";
 
@@ -49,9 +37,18 @@ class SensorParsedBase {
 
   void setMapping(const std::string &parameter, const int index);
 
+  void setForceBatteryPowered(bool forceBatteryPowered);
+
+  void setBatteryStateAppliesToWholeDevice(bool applyToWholeDevice);
+
   void setMultiplier(const std::string &parameter, double multiplier);
 
   bool refreshParserSource(bool updateChannelState = true);
+  bool setOfflineIfSourceDisconnected();
+  void setChannelStateOnline(bool online);
+  bool isSourceStateOffline(bool useOfflineOnInvalidState);
+  bool isOffline();
+  void setUseOfflineOnInvalidState(bool useOfflineOnInvalidState);
 
   bool isParameterConfigured(const std::string &parameter);
 
@@ -85,7 +82,10 @@ class SensorParsedBase {
   Supla::Parser::Parser *parser = nullptr;
   std::map<std::string, std::string> parameterToKey;
   std::map<std::string, double> parameterMultiplier;
+  bool forceBatteryPowered = false;
+  bool batteryStateAppliesToWholeDevice = false;
   std::vector<std::variant<int, bool, std::string>> stateOnValues;
+  bool useOfflineOnInvalidState = false;
 
   // action trigger configuration
   std::string atName;

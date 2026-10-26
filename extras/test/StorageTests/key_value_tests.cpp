@@ -1,26 +1,13 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
-
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
-
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <supla/storage/key_value.h>
 #include <supla-common/proto.h>
 #include <stdio.h>
+#include <array>
+#include <cstring>
 
 #include "supla/storage/config.h"
 
@@ -30,6 +17,9 @@ class KeyValueTest : public Supla::KeyValue {
     return true;
   };
   void removeAll() override {};
+  int getBlobSizeForTest(const char* key) {
+    return getBlobSize(key);
+  }
 };
 
 TEST(KeyValueElementTests, isKeyEqualTest) {
@@ -39,6 +29,17 @@ TEST(KeyValueElementTests, isKeyEqualTest) {
   EXPECT_FALSE(kve.isKeyEqual("secret "));
   EXPECT_FALSE(kve.isKeyEqual("secr"));
   EXPECT_FALSE(kve.isKeyEqual("test"));
+}
+
+TEST(KeyValueElementTests, maxLengthKeyPreservesFixedWidthStorage) {
+  Supla::KeyValueElement kve("123456789012345");
+
+  uint8_t serializedData[SUPLA_STORAGE_KEY_SIZE + 1 + 2 + 1] = {};
+  EXPECT_TRUE(kve.setUInt8(1));
+  EXPECT_EQ(kve.serialize(serializedData, sizeof(serializedData)),
+            sizeof(serializedData));
+  EXPECT_EQ(memcmp(serializedData, "123456789012345", SUPLA_STORAGE_KEY_SIZE),
+            0);
 }
 
 TEST(KeyValueElementTests, elementSequenceTest) {
@@ -253,7 +254,9 @@ TEST(KeyValueElementTests, blobTest) {
   int32_t result32 = 4;
 
   // UINT 8
+  EXPECT_EQ(kve1.getBlobSize(), -1);
   EXPECT_TRUE(kve1.setBlob("testing", 4));
+  EXPECT_EQ(kve1.getBlobSize(), 4);
 
   char temp[10] = {};
 
@@ -272,6 +275,7 @@ TEST(KeyValueElementTests, blobTest) {
   EXPECT_FALSE(kve1.setUInt8(25));
 
   EXPECT_TRUE(kve1.setBlob("1234567890", 10));
+  EXPECT_EQ(kve1.getBlobSize(), 10);
   EXPECT_FALSE(kve1.getBlob(temp, 9));
   EXPECT_TRUE(kve1.getBlob(temp, 10));
   EXPECT_EQ(strncmp(temp, "1234567890", 10), 0);
@@ -314,6 +318,16 @@ TEST(KeyValueElementTests, blobTest) {
   EXPECT_FALSE(kve1.serialize(serializedData, 10));
 }
 
+TEST(KeyValueElementTests, blobSizeDistinguishesMissingTypeAndEmptyBlob) {
+  Supla::KeyValueElement intElement("int");
+  EXPECT_TRUE(intElement.setUInt8(1));
+  EXPECT_EQ(intElement.getBlobSize(), -1);
+
+  Supla::KeyValueElement emptyBlob("empty");
+  EXPECT_TRUE(emptyBlob.setBlob("", 0));
+  EXPECT_EQ(emptyBlob.getBlobSize(), 0);
+}
+
 TEST(KeyValueTests, integrationTest) {
   KeyValueTest kvStorage;
 
@@ -330,8 +344,10 @@ TEST(KeyValueTests, integrationTest) {
   EXPECT_FALSE(kvStorage.getUInt32("test", &resultU32));
   EXPECT_FALSE(kvStorage.getString("test", temp, 20));
   EXPECT_FALSE(kvStorage.getBlob("test", temp, 25));
+  EXPECT_EQ(kvStorage.getBlobSizeForTest("test"), -1);
 
   EXPECT_TRUE(kvStorage.setString("wifissid", "MY wiFi SSID"));
+  EXPECT_EQ(kvStorage.getBlobSizeForTest("wifissid"), -1);
   EXPECT_FALSE(kvStorage.getString("wifissid2", temp, 50));
   EXPECT_TRUE(kvStorage.getString("wifissid", temp, 50));
   EXPECT_STREQ(temp, "MY wiFi SSID");
@@ -347,6 +363,7 @@ TEST(KeyValueTests, integrationTest) {
   EXPECT_STREQ(temp, "secret");
 
   EXPECT_TRUE(kvStorage.setUInt32("suplaport", 2019));
+  EXPECT_EQ(kvStorage.getBlobSizeForTest("suplaport"), -1);
   EXPECT_TRUE(kvStorage.getUInt32("suplaport", &resultU32));
   EXPECT_EQ(resultU32, 2019);
 
@@ -380,8 +397,88 @@ TEST(KeyValueTests, integrationTest) {
   EXPECT_EQ(memcmp(buffer, secondBuffer, 1024), 0);
 }
 
+TEST(KeyValueTests, initFromMemoryRollsBackAfterPartialParseAndCanBeRetried) {
+  constexpr size_t firstRecordSize = SUPLA_STORAGE_KEY_SIZE + 1 + 2 + 1;
+  constexpr size_t secondRecordHeaderAndOneByte =
+      SUPLA_STORAGE_KEY_SIZE + 1 + 2 + 1;
+
+  KeyValueTest source;
+  ASSERT_TRUE(source.setUInt8("rollback_first", 11));
+  ASSERT_TRUE(source.setUInt32("rollback_second", 22));
+
+  std::array<uint8_t, 128> validBuffer = {};
+  const size_t validSize =
+      source.serializeToMemory(validBuffer.data(), validBuffer.size());
+  ASSERT_EQ(validSize, firstRecordSize + SUPLA_STORAGE_KEY_SIZE + 1 + 2 + 4);
+
+  std::array<uint8_t, 128> malformedBuffer = {};
+  const size_t malformedSize =
+      firstRecordSize + secondRecordHeaderAndOneByte;
+  std::memcpy(malformedBuffer.data(), validBuffer.data(), malformedSize);
+
+  KeyValueTest storage;
+  EXPECT_FALSE(storage.initFromMemory(malformedBuffer.data(), malformedSize));
+
+  uint8_t resultU8 = 0;
+  uint32_t resultU32 = 0;
+  EXPECT_FALSE(storage.getUInt8("rollback_first", &resultU8));
+  EXPECT_FALSE(storage.getUInt32("rollback_second", &resultU32));
+
+  EXPECT_TRUE(storage.initFromMemory(validBuffer.data(), validSize));
+  EXPECT_TRUE(storage.getUInt8("rollback_first", &resultU8));
+  EXPECT_EQ(resultU8, 11);
+  EXPECT_TRUE(storage.getUInt32("rollback_second", &resultU32));
+  EXPECT_EQ(resultU32, 22);
+}
+
+TEST(KeyValueTests, initFromMemoryRejectsNonEmptyStorageWithoutClearingIt) {
+  KeyValueTest source;
+  ASSERT_TRUE(source.setUInt8("new_value", 22));
+
+  std::array<uint8_t, 64> buffer = {};
+  const size_t dataSize =
+      source.serializeToMemory(buffer.data(), buffer.size());
+
+  KeyValueTest storage;
+  ASSERT_TRUE(storage.setUInt8("existing", 11));
+
+  EXPECT_FALSE(storage.initFromMemory(buffer.data(), dataSize));
+
+  uint8_t resultU8 = 0;
+  EXPECT_TRUE(storage.getUInt8("existing", &resultU8));
+  EXPECT_EQ(resultU8, 11);
+  EXPECT_FALSE(storage.getUInt8("new_value", &resultU8));
+}
+
+TEST(KeyValueTests, blobSizeReturnsExactPayloadSize) {
+  KeyValueTest kvStorage;
+
+  EXPECT_EQ(kvStorage.getBlobSizeForTest("missing"), -1);
+  EXPECT_TRUE(kvStorage.setBlob("empty", "", 0));
+  EXPECT_EQ(kvStorage.getBlobSizeForTest("empty"), 0);
+  EXPECT_TRUE(kvStorage.setBlob("payload", "abc", 3));
+  EXPECT_EQ(kvStorage.getBlobSizeForTest("payload"), 3);
+  EXPECT_TRUE(kvStorage.setString("text", "abc"));
+  EXPECT_EQ(kvStorage.getBlobSizeForTest("text"), -1);
+}
+
+TEST(KeyValueTests, stringSizeIncludesTerminatorAndReportsMissingKey) {
+  KeyValueTest kvStorage;
+
+  EXPECT_EQ(kvStorage.getStringSize(nullptr), -1);
+  EXPECT_EQ(kvStorage.getStringSize("missing"), -1);
+  EXPECT_TRUE(kvStorage.setString("empty", ""));
+  EXPECT_EQ(kvStorage.getStringSize("empty"), 1);
+  EXPECT_TRUE(kvStorage.setString("payload", "abc"));
+  EXPECT_EQ(kvStorage.getStringSize("payload"), 4);
+  EXPECT_TRUE(kvStorage.setBlob("blob", "abc", 3));
+  EXPECT_EQ(kvStorage.getStringSize("blob"), -1);
+}
+
 TEST(KeyValueTests, variousKVChecks) {
   KeyValueTest kvStorage;
+
+  EXPECT_TRUE(kvStorage.isMqttBrokerVerificationEnabled());
 
   int8_t result8 = {};
 
@@ -431,6 +528,8 @@ TEST(KeyValueTests, variousKVChecks) {
 
   EXPECT_TRUE(kvStorage.setMqttCommProtocolEnabled(true));
   EXPECT_TRUE(kvStorage.setMqttServer("mqtt.server"));
+  EXPECT_FALSE(kvStorage.isMqttBrokerVerificationEnabled());
+  EXPECT_TRUE(kvStorage.setMqttBrokerVerificationEnabled(true));
   EXPECT_TRUE(kvStorage.setMqttServerPort(42));
   EXPECT_TRUE(kvStorage.setMqttUser("mqtt user"));
   EXPECT_TRUE(kvStorage.setMqttPassword("mqtt pass"));
@@ -439,9 +538,13 @@ TEST(KeyValueTests, variousKVChecks) {
   EXPECT_TRUE(kvStorage.setMqttAuthEnabled(false));
   EXPECT_TRUE(kvStorage.setMqttRetainEnabled(true));
   EXPECT_TRUE(kvStorage.setMqttPrefix("supla test"));
+  EXPECT_TRUE(kvStorage.setMqttCA("mqtt CA certificate"));
 
   EXPECT_TRUE(kvStorage.isMqttCommProtocolEnabled());
   EXPECT_TRUE(kvStorage.isMqttTlsEnabled());
+  EXPECT_TRUE(kvStorage.isMqttBrokerVerificationEnabled());
+  EXPECT_TRUE(kvStorage.setMqttBrokerVerificationEnabled(false));
+  EXPECT_FALSE(kvStorage.isMqttBrokerVerificationEnabled());
   EXPECT_FALSE(kvStorage.isMqttAuthEnabled());
   EXPECT_TRUE(kvStorage.isMqttRetainEnabled());
 
@@ -455,6 +558,11 @@ TEST(KeyValueTests, variousKVChecks) {
   EXPECT_EQ(kvStorage.getMqttQos(), 2);
   EXPECT_TRUE(kvStorage.getMqttPrefix(buf));
   EXPECT_STREQ(buf, "supla test");
+  EXPECT_EQ(kvStorage.getMqttCASize(), 19);
+  EXPECT_TRUE(kvStorage.getMqttCA(buf, sizeof(buf)));
+  EXPECT_STREQ(buf, "mqtt CA certificate");
+  EXPECT_TRUE(kvStorage.setMqttCA(""));
+  EXPECT_EQ(kvStorage.getMqttCASize(), 0);
 
   EXPECT_TRUE(kvStorage.setWiFiSSID("ssid"));
   EXPECT_TRUE(kvStorage.setWiFiPassword("pass"));

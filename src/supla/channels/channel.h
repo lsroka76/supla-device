@@ -1,18 +1,5 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #ifndef SRC_SUPLA_CHANNELS_CHANNEL_H_
 #define SRC_SUPLA_CHANNELS_CHANNEL_H_
@@ -28,6 +15,12 @@ namespace Supla {
 enum class HvacCoolSubfunctionFlag {
   HeatSubfunctionOrNotUsed,
   CoolSubfunction,
+};
+
+enum class BatteryState : uint8_t {
+  Normal = SUPLA_BATTERY_STATE_OK,
+  Low = SUPLA_BATTERY_STATE_LOW,
+  NotSet = 0xFF,
 };
 
 class Channel : public LocalAction {
@@ -256,7 +249,7 @@ class Channel : public LocalAction {
   virtual bool isExtended() const;
   bool isUpdateReady() const;
   int getChannelNumber() const;
-  uint32_t getChannelType() const;
+  virtual uint32_t getChannelType() const;
 
   void setType(uint32_t type);
 
@@ -284,6 +277,7 @@ class Channel : public LocalAction {
   uint32_t getActionTriggerCaps();
 
   void setValidityTimeSec(uint32_t timeSec);
+  void clearValue();
   virtual void sendUpdate();
   virtual TSuplaChannelExtendedValue *getExtValue();
   // Returns true when value was properly converted to EM value.
@@ -291,7 +285,8 @@ class Channel : public LocalAction {
   virtual bool getExtValueAsElectricityMeter(
       TElectricityMeter_ExtendedValue_V3 *out);
   void setCorrection(double correction, bool forSecondaryValue = false);
-  bool isSleepingEnabled();
+  bool isSleepingEnabled() const;
+  uint32_t getValidityTimeSec() const;
   bool isWeeklyScheduleAvailable();
 
   // Returns true if channel is battery powered (for channel state info)
@@ -313,6 +308,11 @@ class Channel : public LocalAction {
    * @param level 0..100
    */
   void setBatteryLevel(int level);
+
+  BatteryState getBatteryState() const;
+  void setBatteryState(BatteryState state,
+                       bool applyToWholeDevice = false);
+  bool isBatteryStateAppliedToWholeDevice() const;
 
   // Sets bridge signal strength. Allowed values are 0..100, or 255 to disable
   void setBridgeSignalStrength(unsigned char level);
@@ -354,6 +354,10 @@ class Channel : public LocalAction {
   bool isRollerShutterRelayType() const;
   void setRelayOvercurrentCutOff(bool value);
   bool isRelayOvercurrentCutOff() const;
+  void setRelayMode(uint8_t mode);
+  uint8_t getRelayMode() const;
+  void setRelayWeeklyScheduleEnabled(bool enabled);
+  bool isRelayWeeklyScheduleEnabled() const;
 
   void onRegistered();
   void setSendGetConfig();
@@ -397,6 +401,8 @@ class Channel : public LocalAction {
 
   uint8_t batteryLevel = 255;          // 0 - 100%; 255 - not used
   uint8_t batteryPowered = 0;  // 0 - not used, 1 - true, 2 - false
+  BatteryState batteryState = BatteryState::NotSet;
+  bool batteryStateAppliedToWholeDevice = false;
   unsigned char bridgeSignalStrength = 255;  // 0 - 100%; 255 - not used
 
   // registration parameter

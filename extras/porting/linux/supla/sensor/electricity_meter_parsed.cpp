@@ -1,18 +1,5 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "electricity_meter_parsed.h"
 #include <supla/log_wrapper.h>
@@ -27,7 +14,22 @@ void Supla::Sensor::ElectricityMeterParsed::onInit() {
 }
 
 void Supla::Sensor::ElectricityMeterParsed::readValuesFromDevice() {
-  if (refreshParserSource()) {
+  bool measurementsValid = refreshParserSource();
+  if (measurementsValid) {
+    for (const auto& mapping : parameterToKey) {
+      if (mapping.first == Supla::Sensor::BatteryState ||
+          mapping.first == Supla::Sensor::BatteryLevel ||
+          mapping.first == Supla::Sensor::BatteryPowered) {
+        continue;
+      }
+      getParameterValue(mapping.first);
+      if (!parser->isValid()) {
+        measurementsValid = false;
+        break;
+      }
+    }
+  }
+  if (measurementsValid) {
     if (isParameterConfigured(Supla::Parser::FwdActEnergy1)) {
       setFwdActEnergy(0,
           getParameterValue(Supla::Parser::FwdActEnergy1) * 100000);

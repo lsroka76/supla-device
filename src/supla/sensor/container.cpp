@@ -1,32 +1,17 @@
-/*
-   Copyright (C) AC SOFTWARE SP. Z O.O
-
-   This program is free software; you can redistribute it and/or
-   modify it under the terms of the GNU General Public License
-   as published by the Free Software Foundation; either version 2
-   of the License, or (at your option) any later version.
-
-   This program is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
-
-   You should have received a copy of the GNU General Public License
-   along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "container.h"
 
 #include <supla-common/proto.h>
-#include <supla/time.h>
-#include <supla/log_wrapper.h>
-#include <supla/storage/config.h>
-#include <supla/storage/storage.h>
-#include <supla/storage/config_tags.h>
 #include <supla/actions.h>
 #include <supla/events.h>
+#include <supla/log_wrapper.h>
 #include <supla/protocol/protocol_layer.h>
+#include <supla/storage/config.h>
+#include <supla/storage/config_tags.h>
+#include <supla/storage/storage.h>
+#include <supla/time.h>
 
 using Supla::Sensor::Container;
 
@@ -134,30 +119,28 @@ void Container::setReadIntervalMs(uint32_t timeMs) {
   readIntervalMs = timeMs;
 }
 
-
 void Container::setAlarmActive(bool alarmActive) {
   channel.setContainerAlarm(alarmActive);
 }
-
 
 bool Container::isAlarmActive() const {
   return channel.isContainerAlarmActive();
 }
 
 void Container::setWarningActive(bool warningActive) {
-    channel.setContainerWarning(warningActive);
+  channel.setContainerWarning(warningActive);
 }
 
 bool Container::isWarningActive() const {
-    return channel.isContainerWarningActive();
+  return channel.isContainerWarningActive();
 }
 
 void Container::setInvalidSensorStateActive(bool invalidSensorStateActive) {
-    channel.setContainerInvalidSensorState(invalidSensorStateActive);
+  channel.setContainerInvalidSensorState(invalidSensorStateActive);
 }
 
 bool Container::isInvalidSensorStateActive() const {
-    return channel.isContainerInvalidSensorStateActive();
+  return channel.isContainerInvalidSensorStateActive();
 }
 
 void Container::setSoundAlarmOn(uint8_t level) {
@@ -340,7 +323,6 @@ int8_t Container::getHighestSensorValueAndUpdateState() {
     sensorOfflineReported = false;
   }
 
-
   return highestValue;
 }
 
@@ -446,7 +428,8 @@ void Container::onLoadConfig(SuplaDeviceClass *) {
 Supla::ApplyConfigResult Container::applyChannelConfig(
     TSD_ChannelConfig *result, bool) {
   SUPLA_LOG_DEBUG(
-      "Contaier[%d]:applyChannelConfig, func %d, configtype %d, configsize %d",
+      "Contaier[%d]:applyChannelConfig, func %d, configtype %d, "
+      "configsize %d",
       getChannelNumber(),
       result->Func,
       result->ConfigType,
@@ -500,8 +483,7 @@ Supla::ApplyConfigResult Container::applyChannelConfig(
     }
     default: {
       SUPLA_LOG_WARNING("Container[%d]: unsupported func %d",
-                        getChannelNumber(),
-                        result->Func);
+                        getChannelNumber(), result->Func);
       break;
     }
   }
@@ -551,8 +533,7 @@ void Container::fillChannelConfig(void *channelConfig,
     case SUPLA_CHANNELFNC_CONTAINER:
     case SUPLA_CHANNELFNC_SEPTIC_TANK:
     case SUPLA_CHANNELFNC_WATER_TANK: {
-      auto cfg = reinterpret_cast<TChannelConfig_Container *>(
-          channelConfig);
+      auto cfg = reinterpret_cast<TChannelConfig_Container *>(channelConfig);
       *size = sizeof(TChannelConfig_Container);
       cfg->AlarmAboveLevel = config.alarmAboveLevel;
       cfg->AlarmBelowLevel = config.alarmBelowLevel;
@@ -604,8 +585,8 @@ void Container::saveConfig() {
     saveConfigChangeFlag();
     cfg->saveWithDelay(5000);
   }
-  for (auto proto = Supla::Protocol::ProtocolLayer::first();
-      proto != nullptr; proto = proto->next()) {
+  for (auto proto = Supla::Protocol::ProtocolLayer::first(); proto != nullptr;
+       proto = proto->next()) {
     proto->notifyConfigChange(getChannelNumber());
   }
 }
@@ -618,11 +599,10 @@ bool Container::isSoundAlarmSupported() const {
   return soundAlarmSupported;
 }
 
-
 int Container::handleCalcfgFromServer(TSD_DeviceCalCfgRequest *request) {
   if (request) {
     if (request->Command == SUPLA_CALCFG_CMD_MUTE_ALARM_SOUND) {
-      if (config.muteAlarmSoundWithoutAdditionalAuth &&
+      if (!config.muteAlarmSoundWithoutAdditionalAuth &&
           !request->SuperUserAuthorized) {
         return SUPLA_CALCFG_RESULT_UNAUTHORIZED;
       }

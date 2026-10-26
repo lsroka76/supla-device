@@ -1,18 +1,5 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #ifndef SRC_SUPLA_CONTROL_BUTTON_H_
 #define SRC_SUPLA_CONTROL_BUTTON_H_
@@ -98,10 +85,40 @@ class Button : public SimpleButton, public ActionHandler {
 
   uint32_t getLastStateChange() const;
 
-  void setAllowHoldOnPowerOn(bool allow) { allowHoldOnPowerOn = allow; }
+  void setAllowHoldOnPowerOn(bool allow) {
+    runtimeFlags.allowHoldOnPowerOn = allow;
+  }
 
  protected:
+  struct RuntimeFlags {
+    uint16_t actionTriggerModeLocked : 1;
+    uint16_t actionTriggerLocalUnlockAllowed : 1;
+    uint16_t keepConfigButtonTriggerAlwaysAvailable : 1;
+    uint16_t actionTriggerSuppressActionsUntilRelease : 1;
+    uint16_t actionTriggerDispatching : 1;
+    uint16_t suppressActionsUntilRelease : 1;
+    uint16_t repeatOnHoldEnabled : 1;
+    uint16_t configButton : 1;
+    uint16_t disabled : 1;
+    uint16_t allowHoldOnPowerOn : 1;
+    uint16_t waitingForRelease : 1;
+    uint16_t conditionalActionsOnClick1 : 1;
+    uint16_t reserved : 4;
+  };
+
+  static_assert(sizeof(RuntimeFlags) == sizeof(uint16_t),
+                "Button runtime flags must fit in uint16_t");
+
+  void setActionTriggerModeLocked(bool locked);
+  void setActionTriggerModeLocked(bool locked,
+                                  bool localUnlockAllowed,
+                                  bool keepConfigButtonTriggerAlwaysAvailable);
+  bool runActionWithActionTriggerPolicy(uint16_t event);
   void evaluateMaxMulticlickValue();
+  // Used by ActionTrigger for bistable directional press/release pairs.
+  // Counting clicks (including CFG x10) remains independent of this policy.
+  // Reapplying the same policy preserves pending clicks and release timing.
+  void setConditionalActionsOnClick1(bool enabled);
   // disbles repeating "on hold" if repeat time is lower than threshold
   // threshold 0 disables always
   void disableRepeatOnHold(uint32_t threshold = 0);
@@ -112,17 +129,13 @@ class Button : public SimpleButton, public ActionHandler {
   uint16_t holdSend = 0;
   uint16_t holdTimeMs = 0;
   uint16_t multiclickTimeMs = 0;
+  RuntimeFlags runtimeFlags = {};
   ButtonType buttonType = ButtonType::MONOSTABLE;
   enum OnLoadConfigType onLoadConfigType = OnLoadConfigType::LOAD_FULL_CONFIG;
 
   uint8_t clickCounter = 0;
   uint8_t maxMulticlickValueConfigured = 0;
-  bool repeatOnHoldEnabled = false;
-  bool configButton = false;
   int8_t buttonNumber = -1;
-  bool disabled = false;
-  bool allowHoldOnPowerOn = false;
-  bool waitingForRelease = false;
 
   static int buttonCounter;
 };

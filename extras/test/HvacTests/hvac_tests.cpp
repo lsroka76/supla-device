@@ -1,30 +1,22 @@
-/*
- * Copyright (C) AC SOFTWARE SP. Z O.O
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
- */
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <config_mock.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <protocol_layer_mock.h>
 #include <simple_time.h>
+#include <clock_stub.h>
 #include <string.h>
+#include <supla/actions.h>
+#include <supla/condition.h>
+#include <supla/condition_getter.h>
 #include <supla/control/hvac_base.h>
+#include <supla/control/relay.h>
+#include <supla/events.h>
 #include <supla/sensor/therm_hygro_meter.h>
 #include <supla/sensor/thermometer.h>
+#include <supla/sensor/virtual_binary.h>
 #include <output_mock.h>
 
 using ::testing::_;
@@ -33,6 +25,23 @@ using ::testing::StrEq;
 using ::testing::Return;
 // using ::testing::Args;
 // using ::testing::ElementsAre;
+
+namespace {
+
+class CountingActionHandler : public Supla::ActionHandler {
+ public:
+  void handleAction(int event, int action) override {
+    lastEvent = event;
+    lastAction = action;
+    count++;
+  }
+
+  int count = 0;
+  int lastEvent = -1;
+  int lastAction = -1;
+};
+
+}  // namespace
 
 class HvacTestsF : public ::testing::Test {
  protected:
@@ -171,6 +180,143 @@ TEST_F(HvacTestsF, BasicChannelSetup) {
                 SUPLA_BIT_FUNC_HVAC_THERMOSTAT_DIFFERENTIAL);
 }
 
+TEST_F(HvacTestsF, invalidBinarySensorAssignmentIsClearedOnInit) {
+  OutputSimulator output;
+  Supla::Control::HvacBase hvac(&output);
+
+  hvac.getChannel()->setDefaultFunction(SUPLA_CHANNELFNC_HVAC_THERMOSTAT);
+  hvac.initDefaultConfig();
+
+  ASSERT_TRUE(hvac.setBinarySensorChannelNo(99));
+  ASSERT_EQ(hvac.getBinarySensorChannelNo(), 99);
+
+  hvac.onInit();
+
+  EXPECT_EQ(hvac.getBinarySensorChannelNo(), -1);
+}
+
+TEST_F(HvacTestsF, masterThermostatAssignmentIsValidatedAfterInit) {
+  OutputSimulatorWithCheck output;
+  Supla::Control::HvacBase hvac(&output);
+  Supla::Control::HvacBase master;
+  Supla::Control::Relay relay(0);
+
+  hvac.getChannel()->setChannelNumber(5);
+  master.getChannel()->setChannelNumber(6);
+  relay.getChannel()->setChannelNumber(7);
+
+  EXPECT_CALL(output, setOutputValueCheck(0)).Times(::testing::AtLeast(1));
+  hvac.onInit();
+
+  EXPECT_TRUE(hvac.setMasterThermostatChannelNo(6));
+  EXPECT_TRUE(hvac.isMasterThermostatSet());
+  EXPECT_EQ(hvac.getMasterThermostatChannelNo(), 6);
+
+  EXPECT_FALSE(hvac.setMasterThermostatChannelNo(7));
+  EXPECT_FALSE(hvac.setMasterThermostatChannelNo(99));
+  EXPECT_FALSE(hvac.setMasterThermostatChannelNo(-2));
+  EXPECT_TRUE(hvac.isMasterThermostatSet());
+  EXPECT_EQ(hvac.getMasterThermostatChannelNo(), 6);
+
+  EXPECT_TRUE(hvac.setMasterThermostatChannelNo(-1));
+  EXPECT_FALSE(hvac.isMasterThermostatSet());
+  EXPECT_EQ(hvac.getMasterThermostatChannelNo(), -1);
+
+  EXPECT_TRUE(hvac.setMasterThermostatChannelNo(6));
+  EXPECT_TRUE(hvac.isMasterThermostatSet());
+
+  EXPECT_TRUE(hvac.setMasterThermostatChannelNo(hvac.getChannelNumber()));
+  EXPECT_FALSE(hvac.isMasterThermostatSet());
+  EXPECT_EQ(hvac.getMasterThermostatChannelNo(), -1);
+
+  EXPECT_TRUE(hvac.setMasterThermostatChannelNo(-1));
+  EXPECT_FALSE(hvac.isMasterThermostatSet());
+  EXPECT_EQ(hvac.getMasterThermostatChannelNo(), -1);
+}
+
+TEST_F(HvacTestsF, invalidMasterThermostatAssignmentIsClearedOnInit) {
+  OutputSimulatorWithCheck output;
+  Supla::Control::HvacBase hvac(&output);
+
+  hvac.getChannel()->setChannelNumber(5);
+  EXPECT_TRUE(hvac.setMasterThermostatChannelNo(99));
+  ASSERT_TRUE(hvac.isMasterThermostatSet());
+  ASSERT_EQ(hvac.getMasterThermostatChannelNo(), 99);
+
+  EXPECT_CALL(output, setOutputValueCheck(0)).Times(::testing::AtLeast(1));
+  hvac.onInit();
+
+  EXPECT_FALSE(hvac.isMasterThermostatSet());
+  EXPECT_EQ(hvac.getMasterThermostatChannelNo(), -1);
+}
+
+TEST_F(HvacTestsF, CountdownTimerRemainingConditionFiresOnThreshold) {
+  OutputSimulatorWithCheck output;
+  EXPECT_CALL(output, setOutputValueCheck(_)).Times(::testing::AnyNumber());
+  ClockStub clock;
+  CountingActionHandler actionCounter;
+  Supla::Control::HvacBase hvac(&output);
+  hvac.setTemperatureRoomMin(500);
+  hvac.setTemperatureRoomMax(5000);
+  hvac.addAvailableAlgorithm(SUPLA_HVAC_ALGORITHM_ON_OFF_SETPOINT_MIDDLE);
+  hvac.onInit();
+
+  time.advance(1);
+
+  hvac.addAction(Supla::TURN_OFF,
+                 actionCounter,
+                 Supla::ON_COUNTDOWN_TIMER,
+                 OnLessEq(300, CountdownTimerRemainingSec()));
+
+  ASSERT_TRUE(hvac.applyNewRuntimeSettings(
+      SUPLA_HVAC_MODE_HEAT, 2100, INT16_MIN, 301));
+
+  hvac.iterateAlways();
+  EXPECT_EQ(actionCounter.count, 0);
+
+  time.advance(1000);
+  hvac.iterateAlways();
+  EXPECT_EQ(actionCounter.count, 1);
+  EXPECT_EQ(actionCounter.lastEvent, Supla::ON_COUNTDOWN_TIMER);
+  EXPECT_EQ(actionCounter.lastAction, Supla::TURN_OFF);
+
+  time.advance(1000);
+  hvac.iterateAlways();
+  EXPECT_EQ(actionCounter.count, 1);
+}
+
+TEST_F(HvacTestsF, CountdownTimerRemainingEmitsDuringConfigChangeWait) {
+  OutputSimulatorWithCheck output;
+  EXPECT_CALL(output, setOutputValueCheck(_)).Times(::testing::AnyNumber());
+  ClockStub clock;
+  CountingActionHandler actionCounter;
+  Supla::Control::HvacBase hvac(&output);
+  hvac.setTemperatureRoomMin(500);
+  hvac.setTemperatureRoomMax(5000);
+  hvac.addAvailableAlgorithm(SUPLA_HVAC_ALGORITHM_ON_OFF_SETPOINT_MIDDLE);
+  hvac.onInit();
+
+  time.advance(1);
+
+  hvac.addAction(Supla::TURN_OFF,
+                 actionCounter,
+                 Supla::ON_COUNTDOWN_TIMER,
+                 OnLessEq(5, CountdownTimerRemainingSec()));
+
+  ASSERT_TRUE(hvac.applyNewRuntimeSettings(
+      SUPLA_HVAC_MODE_HEAT, 2100, INT16_MIN, 6));
+  hvac.saveConfig();
+
+  hvac.iterateAlways();
+  EXPECT_EQ(actionCounter.count, 0);
+
+  time.advance(1000);
+  hvac.iterateAlways();
+  EXPECT_EQ(actionCounter.count, 1);
+  EXPECT_EQ(actionCounter.lastEvent, Supla::ON_COUNTDOWN_TIMER);
+  EXPECT_EQ(actionCounter.lastAction, Supla::TURN_OFF);
+}
+
 TEST_F(HvacTestsF, checkDefaultFunctionInitizedByOnInit) {
   OutputSimulatorWithCheck output;
   Supla::Control::HvacBase hvac(&output);
@@ -289,11 +435,13 @@ TEST_F(HvacTestsF, handleChannelConfigTestsOnEmptyElement) {
 
   Supla::Sensor::Thermometer t1;
   Supla::Sensor::ThermHygroMeter t2;
+  Supla::Control::HvacBase master;
   EXPECT_CALL(output, setOutputValueCheck(0)).Times(1);
 
   ASSERT_EQ(hvac.getChannelNumber(), 0);
   ASSERT_EQ(t1.getChannelNumber(), 1);
   ASSERT_EQ(t2.getChannelNumber(), 2);
+  ASSERT_EQ(master.getChannelNumber(), 3);
 
   // init min max ranges for tempreatures setting and check again setters
   // for temperatures
@@ -306,31 +454,32 @@ TEST_F(HvacTestsF, handleChannelConfigTestsOnEmptyElement) {
   hvac.setTemperatureAuxMin(500);   // 5 degrees
   hvac.setTemperatureAuxMax(7500);  // 75 degrees
 
-  EXPECT_EQ(hvac.handleChannelConfig(nullptr), SUPLA_CONFIG_RESULT_DATA_ERROR);
+  EXPECT_EQ(hvac.handleChannelConfig(nullptr, false),
+      SUPLA_CONFIG_RESULT_DATA_ERROR);
 
   TSD_ChannelConfig configFromServer = {};
   configFromServer.ConfigType = SUPLA_CONFIG_TYPE_WEEKLY_SCHEDULE;
 
   // change to function 0 (none/disabled) is allowed
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
 
   configFromServer.ConfigType = SUPLA_CONFIG_TYPE_DEFAULT;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
 
   configFromServer.Func = SUPLA_CHANNELFNC_HVAC_THERMOSTAT;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
 
   // invalid config size
   configFromServer.ConfigSize = sizeof(TChannelConfig_HVAC) - 1;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_DATA_ERROR);
 
   // main thermometer is not set, however we accept such config
   configFromServer.ConfigSize = sizeof(TChannelConfig_HVAC);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
 
   TChannelConfig_HVAC *hvacConfig =
@@ -340,23 +489,57 @@ TEST_F(HvacTestsF, handleChannelConfigTestsOnEmptyElement) {
   hvacConfig->AuxThermometerType =
       SUPLA_HVAC_AUX_THERMOMETER_TYPE_NOT_SET;
 
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   hvac.clearChannelConfigChangedFlag();
 
-  hvacConfig->MainThermometerChannelNo = 0;
+  hvacConfig->MasterThermostatIsSet = 1;
+  hvacConfig->MasterThermostatChannelNo = master.getChannelNumber();
   EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+            SUPLA_CONFIG_RESULT_TRUE);
+  EXPECT_TRUE(hvac.isMasterThermostatSet());
+  EXPECT_EQ(hvac.getMasterThermostatChannelNo(), master.getChannelNumber());
+  hvac.clearChannelConfigChangedFlag();
+
+  for (auto invalidChannel : {1, 0, 4}) {
+    hvacConfig->MasterThermostatChannelNo = invalidChannel;
+    EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+              SUPLA_CONFIG_RESULT_DATA_ERROR);
+    EXPECT_TRUE(hvac.isMasterThermostatSet());
+    EXPECT_EQ(hvac.getMasterThermostatChannelNo(),
+              master.getChannelNumber());
+  }
+
+  hvacConfig->MasterThermostatIsSet = 2;
+  hvacConfig->MasterThermostatChannelNo = master.getChannelNumber();
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+            SUPLA_CONFIG_RESULT_DATA_ERROR);
+  EXPECT_TRUE(hvac.isMasterThermostatSet());
+  EXPECT_EQ(hvac.getMasterThermostatChannelNo(), master.getChannelNumber());
+
+  hvacConfig->MasterThermostatIsSet = 0;
+  hvacConfig->MasterThermostatChannelNo = master.getChannelNumber();
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+            SUPLA_CONFIG_RESULT_TRUE);
+  EXPECT_FALSE(hvac.isMasterThermostatSet());
+  EXPECT_TRUE(hvac.setMasterThermostatChannelNo(master.getChannelNumber()));
+  EXPECT_TRUE(hvac.isMasterThermostatSet());
+  EXPECT_EQ(hvac.getMasterThermostatChannelNo(), master.getChannelNumber());
+  hvac.clearChannelConfigChangedFlag();
+
+  hvacConfig->MainThermometerChannelNo = 0;
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   hvac.clearChannelConfigChangedFlag();
 
   hvacConfig->MainThermometerChannelNo = 2;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   hvac.clearChannelConfigChangedFlag();
 
   // invalid thermometer channel number
   hvacConfig->MainThermometerChannelNo = 3;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   hvac.clearChannelConfigChangedFlag();
 
@@ -364,7 +547,7 @@ TEST_F(HvacTestsF, handleChannelConfigTestsOnEmptyElement) {
   hvacConfig->AuxThermometerType =
       SUPLA_HVAC_AUX_THERMOMETER_TYPE_FLOOR;
   hvacConfig->AuxThermometerChannelNo = 1;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_DATA_ERROR);
   hvac.clearChannelConfigChangedFlag();
 
@@ -372,7 +555,7 @@ TEST_F(HvacTestsF, handleChannelConfigTestsOnEmptyElement) {
   hvacConfig->AuxThermometerType =
       SUPLA_HVAC_AUX_THERMOMETER_TYPE_FLOOR;
   hvacConfig->AuxThermometerChannelNo = 1;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_DATA_ERROR);
   hvac.clearChannelConfigChangedFlag();
 
@@ -380,7 +563,7 @@ TEST_F(HvacTestsF, handleChannelConfigTestsOnEmptyElement) {
   hvacConfig->AuxThermometerType =
       SUPLA_HVAC_AUX_THERMOMETER_TYPE_FLOOR;
   hvacConfig->AuxThermometerChannelNo = 3;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_DATA_ERROR);
   hvac.clearChannelConfigChangedFlag();
 
@@ -388,7 +571,7 @@ TEST_F(HvacTestsF, handleChannelConfigTestsOnEmptyElement) {
   hvacConfig->AuxThermometerType =
       SUPLA_HVAC_AUX_THERMOMETER_TYPE_FLOOR;
   hvacConfig->AuxThermometerChannelNo = 2;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   hvac.clearChannelConfigChangedFlag();
 
@@ -396,158 +579,158 @@ TEST_F(HvacTestsF, handleChannelConfigTestsOnEmptyElement) {
   hvacConfig->AuxThermometerType =
       SUPLA_HVAC_AUX_THERMOMETER_TYPE_FLOOR;
   hvacConfig->AuxThermometerChannelNo = 1;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   hvac.clearChannelConfigChangedFlag();
 
   hvacConfig->UsedAlgorithm = SUPLA_HVAC_ALGORITHM_ON_OFF_SETPOINT_MIDDLE;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   hvac.clearChannelConfigChangedFlag();
 
   hvacConfig->UsedAlgorithm = 15;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_DATA_ERROR);
   hvac.clearChannelConfigChangedFlag();
 
   hvacConfig->UsedAlgorithm = SUPLA_HVAC_ALGORITHM_ON_OFF_SETPOINT_MIDDLE;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   hvac.clearChannelConfigChangedFlag();
 
   // Check hvacConfig with temperatures configured
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_ECO, 0);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_DATA_ERROR);
   hvac.clearChannelConfigChangedFlag();
 
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_ECO, 1600);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   hvac.clearChannelConfigChangedFlag();
 
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_COMFORT, 0);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_DATA_ERROR);
   hvac.clearChannelConfigChangedFlag();
 
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_COMFORT, 2200);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   hvac.clearChannelConfigChangedFlag();
 
 // TEMPERATURE_BOOST
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_BOOST, 10000);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_DATA_ERROR);
   hvac.clearChannelConfigChangedFlag();
 
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_BOOST, 4000);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   hvac.clearChannelConfigChangedFlag();
 
   // TEMPERATURE_FREEZE_PROTECTION
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_FREEZE_PROTECTION, 0);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_DATA_ERROR);
   hvac.clearChannelConfigChangedFlag();
 
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_FREEZE_PROTECTION, 1000);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   hvac.clearChannelConfigChangedFlag();
 
   // TEMPERATURE_HEAT_PROTECTION
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_HEAT_PROTECTION, 0);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_DATA_ERROR);
   hvac.clearChannelConfigChangedFlag();
 
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_HEAT_PROTECTION, 3400);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   hvac.clearChannelConfigChangedFlag();
 
   // TEMPERATURE_HISTERESIS
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_HISTERESIS, 0);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_DATA_ERROR);
   hvac.clearChannelConfigChangedFlag();
 
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_HISTERESIS, 100);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   hvac.clearChannelConfigChangedFlag();
 
   // TEMPERATURE_AUX_HISTERESIS
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_AUX_HISTERESIS, 0);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_DATA_ERROR);
   hvac.clearChannelConfigChangedFlag();
 
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_AUX_HISTERESIS, 150);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   hvac.clearChannelConfigChangedFlag();
 
   // TEMPERATURE_BELOW_ALARM
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_BELOW_ALARM, 0);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_DATA_ERROR);
   hvac.clearChannelConfigChangedFlag();
 
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_BELOW_ALARM, 1800);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   hvac.clearChannelConfigChangedFlag();
 
   // TEMPERATURE_ABOVE_ALARM
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_ABOVE_ALARM, 0);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_DATA_ERROR);
   hvac.clearChannelConfigChangedFlag();
 
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_ABOVE_ALARM, 3500);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   hvac.clearChannelConfigChangedFlag();
 
   // TEMPERATURE_AUX_MAX_SETPOINT
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_AUX_MAX_SETPOINT, 0);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_DATA_ERROR);
   hvac.clearChannelConfigChangedFlag();
 
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_AUX_MAX_SETPOINT, 2000);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   hvac.clearChannelConfigChangedFlag();
 
   // TEMPERATURE_AUX_MIN_SETPOINT
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_AUX_MIN_SETPOINT, 0);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_DATA_ERROR);
   hvac.clearChannelConfigChangedFlag();
 
@@ -555,13 +738,13 @@ TEST_F(HvacTestsF, handleChannelConfigTestsOnEmptyElement) {
   // it will be corrected by device afterwards
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_AUX_MIN_SETPOINT, 2000);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   hvac.clearChannelConfigChangedFlag();
 
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_AUX_MIN_SETPOINT, 1000);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
 
   // check if themperatures and other paramters were set on the hvac config
@@ -873,6 +1056,152 @@ TEST_F(HvacTestsF, otherConfigurationSettersAndGetters) {
   EXPECT_EQ(hvac.getOutputValueOnError(), -100);
 }
 
+TEST_F(HvacTestsF, thermometerChannelSettersValidateRawDisableSentinel) {
+  OutputSimulator output;
+  Supla::Control::HvacBase hvac(&output);
+  Supla::Sensor::Thermometer mainThermometer;
+  Supla::Sensor::ThermHygroMeter auxThermometer;
+  Supla::Sensor::VirtualBinary nonThermometer;
+
+  hvac.onInit();
+
+  ASSERT_TRUE(hvac.setMainThermometerChannelNo(
+      mainThermometer.getChannelNumber()));
+  EXPECT_EQ(hvac.getMainThermometerChannelNo(),
+            mainThermometer.getChannelNumber());
+  EXPECT_FALSE(hvac.setMainThermometerChannelNo(
+      nonThermometer.getChannelNumber()));
+  EXPECT_EQ(hvac.getMainThermometerChannelNo(),
+            mainThermometer.getChannelNumber());
+  EXPECT_FALSE(hvac.setMainThermometerChannelNo(-2));
+  EXPECT_EQ(hvac.getMainThermometerChannelNo(),
+            mainThermometer.getChannelNumber());
+  EXPECT_FALSE(hvac.setMainThermometerChannelNo(300));
+  EXPECT_EQ(hvac.getMainThermometerChannelNo(),
+            mainThermometer.getChannelNumber());
+
+  EXPECT_TRUE(hvac.setMainThermometerChannelNo(-1));
+  EXPECT_EQ(hvac.getMainThermometerChannelNo(), -1);
+  EXPECT_TRUE(hvac.setMainThermometerChannelNo(hvac.getChannelNumber()));
+  EXPECT_EQ(hvac.getMainThermometerChannelNo(), -1);
+  EXPECT_TRUE(hvac.setMainThermometerChannelNo(
+      mainThermometer.getChannelNumber()));
+
+  ASSERT_TRUE(hvac.setAuxThermometerChannelNo(
+      auxThermometer.getChannelNumber()));
+  EXPECT_EQ(hvac.getAuxThermometerChannelNo(),
+            auxThermometer.getChannelNumber());
+  EXPECT_FALSE(hvac.setAuxThermometerChannelNo(
+      nonThermometer.getChannelNumber()));
+  EXPECT_EQ(hvac.getAuxThermometerChannelNo(),
+            auxThermometer.getChannelNumber());
+  EXPECT_FALSE(hvac.setAuxThermometerChannelNo(-2));
+  EXPECT_EQ(hvac.getAuxThermometerChannelNo(),
+            auxThermometer.getChannelNumber());
+  EXPECT_FALSE(hvac.setAuxThermometerChannelNo(300));
+  EXPECT_EQ(hvac.getAuxThermometerChannelNo(),
+            auxThermometer.getChannelNumber());
+
+  EXPECT_TRUE(hvac.setAuxThermometerChannelNo(-1));
+  EXPECT_EQ(hvac.getAuxThermometerChannelNo(), -1);
+  EXPECT_TRUE(hvac.setAuxThermometerChannelNo(hvac.getChannelNumber()));
+  EXPECT_EQ(hvac.getAuxThermometerChannelNo(), -1);
+  EXPECT_TRUE(hvac.setAuxThermometerChannelNo(
+      auxThermometer.getChannelNumber()));
+}
+
+TEST_F(HvacTestsF, invalidThermometerAssignmentsAreClearedOnInit) {
+  OutputSimulator output;
+  Supla::Control::HvacBase hvac(&output);
+
+  hvac.getChannel()->setDefaultFunction(SUPLA_CHANNELFNC_HVAC_THERMOSTAT);
+  hvac.initDefaultConfig();
+
+  ASSERT_TRUE(hvac.setMainThermometerChannelNo(99));
+  ASSERT_TRUE(hvac.setAuxThermometerChannelNo(98));
+  ASSERT_EQ(hvac.getMainThermometerChannelNo(), 99);
+  ASSERT_EQ(hvac.getAuxThermometerChannelNo(), 98);
+
+  hvac.onInit();
+
+  EXPECT_EQ(hvac.getMainThermometerChannelNo(), -1);
+  EXPECT_EQ(hvac.getAuxThermometerChannelNo(), -1);
+}
+
+TEST_F(HvacTestsF, relayChannelSettersValidateRawDisableSentinel) {
+  OutputSimulator output;
+  Supla::Control::HvacBase hvac(&output);
+  Supla::Control::Relay pumpRelay(1);
+  Supla::Control::Relay sourceRelay(2);
+  Supla::Sensor::Thermometer nonRelay;
+
+  hvac.onInit();
+
+  ASSERT_TRUE(hvac.setPumpSwitchChannelNo(pumpRelay.getChannelNumber()));
+  EXPECT_EQ(hvac.getPumpSwitchChannelNo(), pumpRelay.getChannelNumber());
+  EXPECT_TRUE(hvac.isPumpSwitchSet());
+  EXPECT_FALSE(hvac.setPumpSwitchChannelNo(nonRelay.getChannelNumber()));
+  EXPECT_EQ(hvac.getPumpSwitchChannelNo(), pumpRelay.getChannelNumber());
+  EXPECT_FALSE(hvac.setPumpSwitchChannelNo(-2));
+  EXPECT_EQ(hvac.getPumpSwitchChannelNo(), pumpRelay.getChannelNumber());
+  EXPECT_FALSE(hvac.setPumpSwitchChannelNo(300));
+  EXPECT_EQ(hvac.getPumpSwitchChannelNo(), pumpRelay.getChannelNumber());
+
+  EXPECT_TRUE(hvac.setPumpSwitchChannelNo(-1));
+  EXPECT_FALSE(hvac.isPumpSwitchSet());
+  EXPECT_EQ(hvac.getPumpSwitchChannelNo(), -1);
+  EXPECT_TRUE(hvac.setPumpSwitchChannelNo(hvac.getChannelNumber()));
+  EXPECT_FALSE(hvac.isPumpSwitchSet());
+  EXPECT_EQ(hvac.getPumpSwitchChannelNo(), -1);
+  EXPECT_TRUE(hvac.setPumpSwitchChannelNo(pumpRelay.getChannelNumber()));
+
+  ASSERT_TRUE(hvac.setHeatOrColdSourceSwitchChannelNo(
+      sourceRelay.getChannelNumber()));
+  EXPECT_EQ(hvac.getHeatOrColdSourceSwitchChannelNo(),
+            sourceRelay.getChannelNumber());
+  EXPECT_TRUE(hvac.isHeatOrColdSourceSwitchSet());
+  EXPECT_FALSE(hvac.setHeatOrColdSourceSwitchChannelNo(
+      nonRelay.getChannelNumber()));
+  EXPECT_EQ(hvac.getHeatOrColdSourceSwitchChannelNo(),
+            sourceRelay.getChannelNumber());
+  EXPECT_FALSE(hvac.setHeatOrColdSourceSwitchChannelNo(-2));
+  EXPECT_EQ(hvac.getHeatOrColdSourceSwitchChannelNo(),
+            sourceRelay.getChannelNumber());
+  EXPECT_FALSE(hvac.setHeatOrColdSourceSwitchChannelNo(300));
+  EXPECT_EQ(hvac.getHeatOrColdSourceSwitchChannelNo(),
+            sourceRelay.getChannelNumber());
+
+  EXPECT_TRUE(hvac.setHeatOrColdSourceSwitchChannelNo(-1));
+  EXPECT_FALSE(hvac.isHeatOrColdSourceSwitchSet());
+  EXPECT_EQ(hvac.getHeatOrColdSourceSwitchChannelNo(), -1);
+  EXPECT_TRUE(hvac.setHeatOrColdSourceSwitchChannelNo(
+      hvac.getChannelNumber()));
+  EXPECT_FALSE(hvac.isHeatOrColdSourceSwitchSet());
+  EXPECT_EQ(hvac.getHeatOrColdSourceSwitchChannelNo(), -1);
+  EXPECT_TRUE(hvac.setHeatOrColdSourceSwitchChannelNo(
+      sourceRelay.getChannelNumber()));
+}
+
+TEST_F(HvacTestsF, invalidRelayAssignmentsAreClearedOnInit) {
+  OutputSimulator output;
+  Supla::Control::HvacBase hvac(&output);
+
+  hvac.getChannel()->setDefaultFunction(SUPLA_CHANNELFNC_HVAC_THERMOSTAT);
+  hvac.initDefaultConfig();
+
+  ASSERT_TRUE(hvac.setPumpSwitchChannelNo(99));
+  ASSERT_TRUE(hvac.setHeatOrColdSourceSwitchChannelNo(98));
+  ASSERT_TRUE(hvac.isPumpSwitchSet());
+  ASSERT_TRUE(hvac.isHeatOrColdSourceSwitchSet());
+
+  hvac.onInit();
+
+  EXPECT_FALSE(hvac.isPumpSwitchSet());
+  EXPECT_FALSE(hvac.isHeatOrColdSourceSwitchSet());
+  EXPECT_EQ(hvac.getPumpSwitchChannelNo(), -1);
+  EXPECT_EQ(hvac.getHeatOrColdSourceSwitchChannelNo(), -1);
+}
+
 TEST_F(HvacTestWithChannelSetupF, handleChannelConfigWithConfigStorage) {
   EXPECT_CALL(cfg, init());
   TSD_ChannelConfig configFromServer = {};
@@ -916,6 +1245,8 @@ TEST_F(HvacTestWithChannelSetupF, handleChannelConfigWithConfigStorage) {
   EXPECT_CALL(cfg, getInt32(StrEq("0_fnc"), _))
       .Times(1)
       .WillOnce(Return(false));
+  EXPECT_CALL(cfg, getUInt32(StrEq("0_cfg_chng_t"), _))
+      .WillOnce(Return(false));
   EXPECT_CALL(cfg, getUInt8(StrEq("0_cfg_chng"), _))
       .Times(1)
       .WillOnce(Return(false));
@@ -930,15 +1261,14 @@ TEST_F(HvacTestWithChannelSetupF, handleChannelConfigWithConfigStorage) {
       cfg,
       getBlob(
           StrEq("0_hvac_weekly"), _, sizeof(TChannelConfig_WeeklySchedule)))
-      .Times(1)
-      .WillOnce(Return(false));
+      .Times(0);
   EXPECT_CALL(cfg, saveWithDelay(_)).Times(AtLeast(1));
   EXPECT_CALL(cfg,
               setInt32(StrEq("0_fnc"), SUPLA_CHANNELFNC_HVAC_THERMOSTAT))
       .Times(1).WillOnce(Return(true));
 
   EXPECT_CALL(cfg,
-              setUInt8(StrEq("0_cfg_chng"), 0))
+              setUInt32(StrEq("0_cfg_chng_t"), 0))
       .Times(1).WillOnce(Return(true));
 
   EXPECT_CALL(cfg, setBlob(StrEq("0_hvac_cfg"), _, sizeof(TChannelConfig_HVAC)))
@@ -1033,7 +1363,7 @@ TEST_F(HvacTestWithChannelSetupF, handleChannelConfigWithConfigStorage) {
     hvac->iterateAlways();
     hvac->iterateConnected();
   }
-  EXPECT_EQ(hvac->handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac->handleChannelConfig(&configFromServer, false),
       SUPLA_CONFIG_RESULT_TRUE);
 }
 
@@ -1046,6 +1376,8 @@ TEST_F(HvacTestWithChannelSetupF, startupProcedureWithEmptyConfig) {
   EXPECT_CALL(cfg, saveWithDelay(_)).Times(AtLeast(1));
   EXPECT_CALL(cfg, getInt32(StrEq("0_fnc"), _))
       .Times(1)
+      .WillOnce(Return(false));
+  EXPECT_CALL(cfg, getUInt32(StrEq("0_cfg_chng_t"), _))
       .WillOnce(Return(false));
   EXPECT_CALL(cfg, getUInt8(StrEq("0_cfg_chng"), _))
       .Times(1)
@@ -1061,13 +1393,12 @@ TEST_F(HvacTestWithChannelSetupF, startupProcedureWithEmptyConfig) {
       cfg,
       getBlob(
           StrEq("0_hvac_weekly"), _, sizeof(TChannelConfig_WeeklySchedule)))
-      .Times(1)
-      .WillOnce(Return(false));
+      .Times(0);
   EXPECT_CALL(cfg,
               setInt32(StrEq("0_fnc"), SUPLA_CHANNELFNC_HVAC_THERMOSTAT))
       .Times(1)
       .WillOnce(Return(true));
-  EXPECT_CALL(cfg, setUInt8(StrEq("0_cfg_chng"), 0))
+  EXPECT_CALL(cfg, setUInt32(StrEq("0_cfg_chng_t"), 0))
       .Times(1)
       .WillOnce(Return(true));
 
@@ -1201,7 +1532,7 @@ TEST_F(HvacTestWithChannelSetupF, startupProcedureWithEmptyConfig) {
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_AUX_MIN_SETPOINT, 2000);
 
-  EXPECT_EQ(hvac->handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac->handleChannelConfig(&configFromServer, false),
       SUPLA_CONFIG_RESULT_TRUE);
 
   EXPECT_EQ(hvac->getMainThermometerChannelNo(), 1);
@@ -1221,6 +1552,8 @@ TEST_F(HvacTestWithChannelSetupF,
   EXPECT_CALL(cfg, getInt32(StrEq("0_fnc"), _))
       .Times(1)
       .WillOnce(Return(false));
+  EXPECT_CALL(cfg, getUInt32(StrEq("0_cfg_chng_t"), _))
+      .WillOnce(Return(false));
   EXPECT_CALL(cfg, getUInt8(StrEq("0_cfg_chng"), _))
       .Times(1)
       .WillOnce(Return(false));
@@ -1235,8 +1568,7 @@ TEST_F(HvacTestWithChannelSetupF,
       cfg,
       getBlob(
           StrEq("0_hvac_weekly"), _, sizeof(TChannelConfig_WeeklySchedule)))
-      .Times(1)
-      .WillOnce(Return(false));
+      .Times(0);
   EXPECT_CALL(cfg,
               setInt32(StrEq("0_fnc"), SUPLA_CHANNELFNC_HVAC_THERMOSTAT))
       .Times(1)
@@ -1248,12 +1580,12 @@ TEST_F(HvacTestWithChannelSetupF,
       .InSequence(s1)
       .WillOnce(Return(true));
 
-  EXPECT_CALL(cfg, setUInt8(StrEq("0_cfg_chng"), 1))
+  EXPECT_CALL(cfg, setUInt32(StrEq("0_cfg_chng_t"), 1))
       .Times(1)
       .InSequence(s2)
-      .WillOnce(Return(true));
+      .WillRepeatedly(Return(true));
 
-  EXPECT_CALL(cfg, setUInt8(StrEq("0_cfg_chng"), 0))
+  EXPECT_CALL(cfg, setUInt32(StrEq("0_cfg_chng_t"), 0))
       .Times(2)
       .InSequence(s2)
       .WillRepeatedly(Return(true));
@@ -1392,7 +1724,7 @@ TEST_F(HvacTestWithChannelSetupF,
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_AUX_MIN_SETPOINT, 2000);
 
-  EXPECT_EQ(hvac->handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac->handleChannelConfig(&configFromServer, false),
       SUPLA_CONFIG_RESULT_TRUE);
 
   // above set config from server should be ignored
@@ -1400,132 +1732,61 @@ TEST_F(HvacTestWithChannelSetupF,
 
   hvac->handleChannelConfigFinished();
 
-  {
-    ::testing::InSequence seq;
+  EXPECT_CALL(proto,
+              setChannelConfig(0,
+                               SUPLA_CHANNELFNC_HVAC_THERMOSTAT,
+                               _,
+                               sizeof(TChannelConfig_HVAC),
+                               SUPLA_CONFIG_TYPE_DEFAULT))
+      .Times(AtLeast(1))
+      .WillRepeatedly([](uint8_t,
+                         _supla_int_t,
+                         void *buf,
+                         int size,
+                         uint8_t) {
+        TChannelConfig_HVAC expectedData = {};
+        expectedData.MainThermometerChannelNo = 0;
+        expectedData.AuxThermometerChannelNo = 0;
+        expectedData.AuxThermometerType =
+            SUPLA_HVAC_AUX_THERMOMETER_TYPE_NOT_SET;
+        expectedData.AntiFreezeAndOverheatProtectionEnabled = 0;
+        expectedData.AvailableAlgorithms =
+            SUPLA_HVAC_ALGORITHM_ON_OFF_SETPOINT_MIDDLE |
+            SUPLA_HVAC_ALGORITHM_ON_OFF_SETPOINT_AT_MOST;
+        expectedData.UsedAlgorithm =
+            SUPLA_HVAC_ALGORITHM_ON_OFF_SETPOINT_MIDDLE;
+        expectedData.MinOnTimeS = 0;
+        expectedData.MinOffTimeS = 0;
+        expectedData.Subfunction = SUPLA_HVAC_SUBFUNCTION_HEAT;
+        expectedData.TemperatureSetpointChangeSwitchesToManualMode = 1;
+        expectedData.Temperatures = {};
 
-    EXPECT_CALL(proto,
-                setChannelConfig(0,
-                                 SUPLA_CHANNELFNC_HVAC_THERMOSTAT,
-                                 _,
-                                 sizeof(TChannelConfig_HVAC),
-                                 SUPLA_CONFIG_TYPE_DEFAULT))
-        .Times(1)
-        .WillRepeatedly(Return(false));
-    EXPECT_CALL(proto,
-                setChannelConfig(0,
-                                 SUPLA_CHANNELFNC_HVAC_THERMOSTAT,
-                                 _,
-                                 sizeof(TChannelConfig_WeeklySchedule),
-                                 SUPLA_CONFIG_TYPE_WEEKLY_SCHEDULE))
-        .Times(0);
-//        .WillRepeatedly(Return(false));
+        Supla::Control::HvacBase::setTemperatureInStruct(
+            &expectedData.Temperatures, TEMPERATURE_ECO, 1600);
+        Supla::Control::HvacBase::setTemperatureInStruct(
+            &expectedData.Temperatures, TEMPERATURE_ROOM_MIN, 500);
+        Supla::Control::HvacBase::setTemperatureInStruct(
+            &expectedData.Temperatures, TEMPERATURE_ROOM_MAX, 4000);
+        Supla::Control::HvacBase::setTemperatureInStruct(
+            &expectedData.Temperatures, TEMPERATURE_HISTERESIS_MIN, 20);
+        Supla::Control::HvacBase::setTemperatureInStruct(
+            &expectedData.Temperatures, TEMPERATURE_HISTERESIS_MAX, 1000);
+        Supla::Control::HvacBase::setTemperatureInStruct(
+            &expectedData.Temperatures,
+            TEMPERATURE_HEAT_COOL_OFFSET_MIN,
+            200);
+        Supla::Control::HvacBase::setTemperatureInStruct(
+            &expectedData.Temperatures,
+            TEMPERATURE_HEAT_COOL_OFFSET_MAX,
+            1000);
+        Supla::Control::HvacBase::setTemperatureInStruct(
+            &expectedData.Temperatures, TEMPERATURE_AUX_MIN, 500);
+        Supla::Control::HvacBase::setTemperatureInStruct(
+            &expectedData.Temperatures, TEMPERATURE_AUX_MAX, 7500);
 
-    EXPECT_CALL(proto,
-                setChannelConfig(0,
-                                 SUPLA_CHANNELFNC_HVAC_THERMOSTAT,
-                                 _,
-                                 sizeof(TChannelConfig_HVAC),
-                                 SUPLA_CONFIG_TYPE_DEFAULT))
-        .Times(1)
-        .WillRepeatedly(Return(false));
-    EXPECT_CALL(proto,
-                setChannelConfig(0,
-                                 SUPLA_CHANNELFNC_HVAC_THERMOSTAT,
-                                 _,
-                                 sizeof(TChannelConfig_WeeklySchedule),
-                                 SUPLA_CONFIG_TYPE_WEEKLY_SCHEDULE))
-        .Times(0);
-//        .WillRepeatedly(Return(false));
-
-    EXPECT_CALL(proto,
-                setChannelConfig(0,
-                                 SUPLA_CHANNELFNC_HVAC_THERMOSTAT,
-                                 _,
-                                 sizeof(TChannelConfig_HVAC),
-                                 SUPLA_CONFIG_TYPE_DEFAULT))
-        .Times(1)
-        .WillRepeatedly(Return(false));
-    EXPECT_CALL(proto,
-                setChannelConfig(0,
-                                 SUPLA_CHANNELFNC_HVAC_THERMOSTAT,
-                                 _,
-                                 sizeof(TChannelConfig_WeeklySchedule),
-                                 SUPLA_CONFIG_TYPE_WEEKLY_SCHEDULE))
-        .Times(0);
-//        .WillRepeatedly(Return(false));
-
-    EXPECT_CALL(proto,
-                setChannelConfig(0,
-                                 SUPLA_CHANNELFNC_HVAC_THERMOSTAT,
-                                 _,
-                                 sizeof(TChannelConfig_HVAC),
-                                 SUPLA_CONFIG_TYPE_DEFAULT))
-        .WillOnce([](uint8_t,
-                     _supla_int_t,
-                     void *buf,
-                     int size,
-                     uint8_t) {
-          TChannelConfig_HVAC expectedData = {};
-          expectedData.MainThermometerChannelNo = 0;
-          expectedData.AuxThermometerChannelNo = 0;
-          expectedData.AuxThermometerType =
-              SUPLA_HVAC_AUX_THERMOMETER_TYPE_NOT_SET;
-          expectedData.AntiFreezeAndOverheatProtectionEnabled = 0;
-          expectedData.AvailableAlgorithms =
-              SUPLA_HVAC_ALGORITHM_ON_OFF_SETPOINT_MIDDLE |
-              SUPLA_HVAC_ALGORITHM_ON_OFF_SETPOINT_AT_MOST;
-          expectedData.UsedAlgorithm =
-              SUPLA_HVAC_ALGORITHM_ON_OFF_SETPOINT_MIDDLE;
-          expectedData.MinOnTimeS = 0;
-          expectedData.MinOffTimeS = 0;
-          expectedData.Subfunction = SUPLA_HVAC_SUBFUNCTION_HEAT;
-          expectedData.TemperatureSetpointChangeSwitchesToManualMode = 1;
-          expectedData.Temperatures = {};
-
-          Supla::Control::HvacBase::setTemperatureInStruct(
-              &expectedData.Temperatures, TEMPERATURE_ECO, 1600);
-
-          Supla::Control::HvacBase::setTemperatureInStruct(
-              &expectedData.Temperatures, TEMPERATURE_ROOM_MIN, 500);
-          Supla::Control::HvacBase::setTemperatureInStruct(
-              &expectedData.Temperatures, TEMPERATURE_ROOM_MAX, 4000);
-          Supla::Control::HvacBase::setTemperatureInStruct(
-              &expectedData.Temperatures, TEMPERATURE_HISTERESIS_MIN, 20);
-          Supla::Control::HvacBase::setTemperatureInStruct(
-              &expectedData.Temperatures, TEMPERATURE_HISTERESIS_MAX, 1000);
-          Supla::Control::HvacBase::setTemperatureInStruct(
-              &expectedData.Temperatures,
-              TEMPERATURE_HEAT_COOL_OFFSET_MIN,
-              200);
-          Supla::Control::HvacBase::setTemperatureInStruct(
-              &expectedData.Temperatures,
-              TEMPERATURE_HEAT_COOL_OFFSET_MAX,
-              1000);
-          Supla::Control::HvacBase::setTemperatureInStruct(
-              &expectedData.Temperatures, TEMPERATURE_AUX_MIN, 500);
-          Supla::Control::HvacBase::setTemperatureInStruct(
-              &expectedData.Temperatures, TEMPERATURE_AUX_MAX, 7500);
-
-          EXPECT_EQ(0, memcmp(buf, &expectedData, size));
-          return true;
-        });
-    EXPECT_CALL(proto,
-                setChannelConfig(0,
-                                 SUPLA_CHANNELFNC_HVAC_THERMOSTAT,
-                                 _,
-                                 sizeof(TChannelConfig_WeeklySchedule),
-                                 SUPLA_CONFIG_TYPE_WEEKLY_SCHEDULE))
-        .Times(0);
-//        .WillRepeatedly(Return(true));
-    EXPECT_CALL(proto,
-                setChannelConfig(0,
-                                 SUPLA_CHANNELFNC_HVAC_THERMOSTAT,
-                                 _,
-                                 sizeof(TChannelConfig_WeeklySchedule),
-                                 SUPLA_CONFIG_TYPE_ALT_WEEKLY_SCHEDULE))
-        .Times(0);
-//        .WillRepeatedly(Return(true));
-  }
+        EXPECT_EQ(0, memcmp(buf, &expectedData, size));
+        return true;
+      });
 
   for (int i = 0; i < 10; ++i) {
     hvac->iterateAlways();
@@ -1543,7 +1804,7 @@ TEST_F(HvacTestWithChannelSetupF,
 
   // send anothoer set channel config from server - this time it should be
   // applied to the channel
-  EXPECT_EQ(hvac->handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac->handleChannelConfig(&configFromServer, false),
       SUPLA_CONFIG_RESULT_TRUE);
 }
 
@@ -1608,6 +1869,8 @@ TEST_F(HvacTestWithChannelSetupF,
   EXPECT_CALL(cfg, getInt32(StrEq("0_fnc"), _))
       .Times(1)
       .WillOnce(Return(false));
+  EXPECT_CALL(cfg, getUInt32(StrEq("0_cfg_chng_t"), _))
+      .WillOnce(Return(false));
   EXPECT_CALL(cfg, getUInt8(StrEq("0_cfg_chng"), _))
       .Times(1)
       .WillRepeatedly(Return(false));
@@ -1622,8 +1885,7 @@ TEST_F(HvacTestWithChannelSetupF,
       cfg,
       getBlob(
           StrEq("0_hvac_weekly"), _, sizeof(TChannelConfig_WeeklySchedule)))
-      .Times(1)
-      .WillOnce(Return(false));
+      .Times(0);
   EXPECT_CALL(cfg,
               setInt32(StrEq("0_fnc"), SUPLA_CHANNELFNC_HVAC_THERMOSTAT))
       .Times(1)
@@ -1692,7 +1954,7 @@ TEST_F(HvacTestWithChannelSetupF,
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_AUX_MIN_SETPOINT, 2000);
 
-  EXPECT_EQ(hvac->handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac->handleChannelConfig(&configFromServer, false),
       SUPLA_CONFIG_RESULT_DATA_ERROR);
 
   // above set config from server should be ignored beacuse of error in config
@@ -1788,8 +2050,9 @@ TEST_F(HvacTestWithChannelSetupF,
                                  SUPLA_CONFIG_TYPE_ALT_WEEKLY_SCHEDULE))
         .Times(0);
 //        .WillRepeatedly(Return(true));
-    EXPECT_CALL(cfg, setUInt8(StrEq("0_cfg_chng"), 0))
-      .Times(2).WillRepeatedly(Return(true));
+    EXPECT_CALL(cfg, setUInt32(StrEq("0_cfg_chng_t"), 0))
+        .Times(1)
+        .WillRepeatedly(Return(true));
   }
 
   for (int i = 0; i < 10; ++i) {
@@ -1809,7 +2072,7 @@ TEST_F(HvacTestWithChannelSetupF,
   // send anothoer set channel config from server - this time it should be
   // applied to the channel
   hvacConfig->AuxThermometerChannelNo = 2;
-  EXPECT_EQ(hvac->handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac->handleChannelConfig(&configFromServer, false),
       SUPLA_CONFIG_RESULT_TRUE);
 }
 
@@ -1859,7 +2122,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   configFromServer.ConfigType = SUPLA_CONFIG_TYPE_DEFAULT;
   configFromServer.Func = SUPLA_CHANNELFNC_HVAC_THERMOSTAT;
 
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
 
   configFromServer.ConfigSize = sizeof(TChannelConfig_HVAC);
@@ -1903,7 +2166,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_AUX_MIN_SETPOINT, 1000);
 
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
 
   // check if themperatures and other paramters were set on the hvac config
@@ -1956,7 +2219,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   hvac.parameterFlags.MainThermometerChannelNoReadonly = 1;
   hvacConfig->MainThermometerChannelNo = 2;
 
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_EQ(hvac.getMainThermometerChannelNo(), 1);
 
@@ -1964,7 +2227,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   hvacConfig->MainThermometerChannelNo = 2;
   hvac.clearChannelConfigChangedFlag();
 
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_EQ(hvac.getMainThermometerChannelNo(), 2);
   hvac.clearChannelConfigChangedFlag();
@@ -1972,7 +2235,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   EXPECT_EQ(hvac.getAuxThermometerChannelNo(), -1);
   hvac.parameterFlags.AuxThermometerChannelNoReadonly = 1;
   hvacConfig->AuxThermometerChannelNo = 1;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_EQ(hvac.getAuxThermometerChannelNo(), -1);
   hvac.clearChannelConfigChangedFlag();
@@ -1980,7 +2243,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   EXPECT_EQ(hvac.getBinarySensorChannelNo(), -1);
   hvac.parameterFlags.BinarySensorChannelNoReadonly = 1;
   hvacConfig->BinarySensorChannelNo = 1;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_EQ(hvac.getBinarySensorChannelNo(), -1);
   hvac.clearChannelConfigChangedFlag();
@@ -1988,7 +2251,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   EXPECT_EQ(hvac.getAuxThermometerType(), 0);
   hvac.parameterFlags.AuxThermometerTypeReadonly = 1;
   hvacConfig->AuxThermometerType = 1;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_EQ(hvac.getAuxThermometerType(), 0);
   hvac.clearChannelConfigChangedFlag();
@@ -1996,7 +2259,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   EXPECT_EQ(hvac.isAntiFreezeAndHeatProtectionEnabled(), 0);
   hvac.parameterFlags.AntiFreezeAndOverheatProtectionEnabledReadonly = 1;
   hvacConfig->AntiFreezeAndOverheatProtectionEnabled = 1;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_EQ(hvac.isAntiFreezeAndHeatProtectionEnabled(), 0);
   hvac.clearChannelConfigChangedFlag();
@@ -2004,7 +2267,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
     EXPECT_EQ(hvac.getUsedAlgorithm(), 1);
   hvac.parameterFlags.UsedAlgorithmReadonly = 1;
   hvacConfig->UsedAlgorithm = 2;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_EQ(hvac.getUsedAlgorithm(), 1);
   hvac.clearChannelConfigChangedFlag();
@@ -2012,7 +2275,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   EXPECT_EQ(hvac.getMinOnTimeS(), 0);
   hvac.parameterFlags.MinOnTimeSReadonly = 1;
   hvacConfig->MinOnTimeS = 1;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_EQ(hvac.getMinOnTimeS(), 0);
   hvac.clearChannelConfigChangedFlag();
@@ -2020,7 +2283,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   EXPECT_EQ(hvac.getMinOffTimeS(), 0);
     hvac.parameterFlags.MinOffTimeSReadonly = 1;
   hvacConfig->MinOffTimeS = 1;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_EQ(hvac.getMinOffTimeS(), 0);
   hvac.clearChannelConfigChangedFlag();
@@ -2028,7 +2291,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   EXPECT_EQ(hvac.getOutputValueOnError(), 0);
   hvac.parameterFlags.OutputValueOnErrorReadonly = 1;
   hvacConfig->OutputValueOnError = 1;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_EQ(hvac.getOutputValueOnError(), 0);
   hvac.clearChannelConfigChangedFlag();
@@ -2036,7 +2299,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   EXPECT_TRUE(hvac.isHeatingSubfunction());
   hvac.parameterFlags.SubfunctionReadonly = 1;
   hvacConfig->Subfunction = SUPLA_HVAC_SUBFUNCTION_COOL;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_TRUE(hvac.isHeatingSubfunction());
   hvac.clearChannelConfigChangedFlag();
@@ -2044,7 +2307,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   EXPECT_FALSE(hvac.isTemperatureSetpointChangeSwitchesToManualMode());
   hvac.parameterFlags.TemperatureSetpointChangeSwitchesToManualModeReadonly = 1;
   hvacConfig->TemperatureSetpointChangeSwitchesToManualMode = 1;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_FALSE(hvac.isTemperatureSetpointChangeSwitchesToManualMode());
   hvac.clearChannelConfigChangedFlag();
@@ -2052,7 +2315,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   EXPECT_FALSE(hvac.isAuxMinMaxSetpointEnabled());
   hvac.parameterFlags.AuxMinMaxSetpointEnabledReadonly = 1;
   hvacConfig->AuxMinMaxSetpointEnabled = 1;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_FALSE(hvac.isAuxMinMaxSetpointEnabled());
   hvac.clearChannelConfigChangedFlag();
@@ -2060,7 +2323,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   EXPECT_FALSE(hvac.isUseSeparateHeatCoolOutputs());
   hvac.parameterFlags.UseSeparateHeatCoolOutputsReadonly = 1;
   hvacConfig->UseSeparateHeatCoolOutputs = 1;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_FALSE(hvac.isUseSeparateHeatCoolOutputs());
   hvac.clearChannelConfigChangedFlag();
@@ -2069,7 +2332,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   hvac.parameterFlags.TemperaturesFreezeProtectionReadonly = 1;
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_FREEZE_PROTECTION, 2345);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_EQ(hvac.getTemperatureFreezeProtection(), 1000);
   hvac.clearChannelConfigChangedFlag();
@@ -2078,7 +2341,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   hvac.parameterFlags.TemperaturesEcoReadonly = 1;
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_ECO, 2345);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_EQ(hvac.getTemperatureEco(), 1600);
   hvac.clearChannelConfigChangedFlag();
@@ -2087,7 +2350,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   hvac.parameterFlags.TemperaturesComfortReadonly = 1;
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_COMFORT, 2345);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_EQ(hvac.getTemperatureComfort(), 2200);
   hvac.clearChannelConfigChangedFlag();
@@ -2096,7 +2359,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   hvac.parameterFlags.TemperaturesBoostReadonly = 1;
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_BOOST, 2345);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_EQ(hvac.getTemperatureBoost(), 4000);
   hvac.clearChannelConfigChangedFlag();
@@ -2105,7 +2368,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   hvac.parameterFlags.TemperaturesHeatProtectionReadonly = 1;
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_HEAT_PROTECTION, 2345);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_EQ(hvac.getTemperatureHeatProtection(), 3400);
   hvac.clearChannelConfigChangedFlag();
@@ -2114,7 +2377,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   hvac.parameterFlags.TemperaturesHisteresisReadonly = 1;
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_HISTERESIS, 2345);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_EQ(hvac.getTemperatureHisteresis(), 100);
   hvac.clearChannelConfigChangedFlag();
@@ -2123,7 +2386,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   hvac.parameterFlags.TemperaturesBelowAlarmReadonly = 1;
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_BELOW_ALARM, 2345);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_EQ(hvac.getTemperatureBelowAlarm(), 1800);
   hvac.clearChannelConfigChangedFlag();
@@ -2132,7 +2395,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   hvac.parameterFlags.TemperaturesAboveAlarmReadonly = 1;
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_ABOVE_ALARM, 2345);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_EQ(hvac.getTemperatureAboveAlarm(), 3500);
   hvac.clearChannelConfigChangedFlag();
@@ -2141,7 +2404,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   hvac.parameterFlags.TemperaturesAuxMinSetpointReadonly = 1;
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_AUX_MIN_SETPOINT, 2345);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_EQ(hvac.getTemperatureAuxMinSetpoint(), 1000);
   hvac.clearChannelConfigChangedFlag();
@@ -2150,7 +2413,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   hvac.parameterFlags.TemperaturesAuxMaxSetpointReadonly = 1;
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_AUX_MAX_SETPOINT, 2345);
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_EQ(hvac.getTemperatureAuxMaxSetpoint(), 2000);
   hvac.clearChannelConfigChangedFlag();
@@ -2160,7 +2423,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   hvacConfig->PumpSwitchChannelNo = 2;
   hvacConfig->PumpSwitchIsSet = 1;
 
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_FALSE(hvac.isPumpSwitchSet());
   EXPECT_EQ(hvac.getPumpSwitchChannelNo(), -1);
@@ -2170,7 +2433,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   hvacConfig->PumpSwitchIsSet = 1;
   hvac.clearChannelConfigChangedFlag();
 
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_TRUE(hvac.isPumpSwitchSet());
   EXPECT_EQ(hvac.getPumpSwitchChannelNo(), 2);
@@ -2181,7 +2444,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   hvacConfig->HeatOrColdSourceSwitchChannelNo = 3;
   hvacConfig->HeatOrColdSourceSwitchIsSet = 1;
 
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_FALSE(hvac.isHeatOrColdSourceSwitchSet());
   EXPECT_EQ(hvac.getHeatOrColdSourceSwitchChannelNo(), -1);
@@ -2191,7 +2454,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   hvacConfig->HeatOrColdSourceSwitchIsSet = 1;
   hvac.clearChannelConfigChangedFlag();
 
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_TRUE(hvac.isHeatOrColdSourceSwitchSet());
   EXPECT_EQ(hvac.getHeatOrColdSourceSwitchChannelNo(), 3);
@@ -2203,7 +2466,7 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   hvacConfig->MasterThermostatChannelNo = 4;
   hvacConfig->MasterThermostatIsSet = 1;
 
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
   EXPECT_FALSE(hvac.isMasterThermostatSet());
   EXPECT_EQ(hvac.getMasterThermostatChannelNo(), -1);
@@ -2214,10 +2477,83 @@ TEST_F(HvacTestsF, handleChannelConfigAndReadonlyParameters) {
   hvac.clearChannelConfigChangedFlag();
 
   EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
-            SUPLA_CONFIG_RESULT_TRUE);
-  EXPECT_TRUE(hvac.isMasterThermostatSet());
-  EXPECT_EQ(hvac.getMasterThermostatChannelNo(), 4);
+            SUPLA_CONFIG_RESULT_DATA_ERROR);
+  EXPECT_FALSE(hvac.isMasterThermostatSet());
+  EXPECT_EQ(hvac.getMasterThermostatChannelNo(), -1);
   hvac.clearChannelConfigChangedFlag();
+}
+
+TEST_F(HvacTestsF, readonlyTemperatureFixesDoNotShortCircuit) {
+  OutputSimulatorWithCheck output;
+  Supla::Control::HvacBase hvac(&output);
+
+  Supla::Sensor::Thermometer t1;
+  Supla::Sensor::ThermHygroMeter t2;
+  EXPECT_CALL(output, setOutputValueCheck(0)).Times(AtLeast(1));
+
+  ASSERT_EQ(hvac.getChannelNumber(), 0);
+  ASSERT_EQ(t1.getChannelNumber(), 1);
+  ASSERT_EQ(t2.getChannelNumber(), 2);
+
+  hvac.setTemperatureRoomMin(500);
+  hvac.setTemperatureRoomMax(5000);
+  hvac.setTemperatureHisteresisMin(20);
+  hvac.setTemperatureHisteresisMax(1000);
+  hvac.setTemperatureHeatCoolOffsetMin(200);
+  hvac.setTemperatureHeatCoolOffsetMax(1000);
+  hvac.setTemperatureAuxMin(500);
+  hvac.setTemperatureAuxMax(7500);
+  hvac.setSubfunction(SUPLA_HVAC_SUBFUNCTION_HEAT);
+
+  TSD_ChannelConfig configFromServer = {};
+  configFromServer.ConfigType = SUPLA_CONFIG_TYPE_DEFAULT;
+  configFromServer.Func = SUPLA_CHANNELFNC_HVAC_THERMOSTAT;
+
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+            SUPLA_CONFIG_RESULT_TRUE);
+
+  configFromServer.ConfigSize = sizeof(TChannelConfig_HVAC);
+
+  TChannelConfig_HVAC *hvacConfig =
+      reinterpret_cast<TChannelConfig_HVAC *>(&configFromServer.Config);
+
+  hvacConfig->Subfunction = SUPLA_HVAC_SUBFUNCTION_HEAT;
+  hvacConfig->MainThermometerChannelNo = 1;
+  hvacConfig->AuxThermometerType =
+      SUPLA_HVAC_AUX_THERMOMETER_TYPE_NOT_SET;
+  hvacConfig->UsedAlgorithm = SUPLA_HVAC_ALGORITHM_ON_OFF_SETPOINT_MIDDLE;
+
+  Supla::Control::HvacBase::setTemperatureInStruct(
+      &hvacConfig->Temperatures, TEMPERATURE_ECO, 1600);
+  Supla::Control::HvacBase::setTemperatureInStruct(
+      &hvacConfig->Temperatures, TEMPERATURE_COMFORT, 2200);
+
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+            SUPLA_CONFIG_RESULT_TRUE);
+  hvac.clearChannelConfigChangedFlag();
+
+  hvac.parameterFlags.TemperaturesEcoReadonly = 1;
+  hvac.parameterFlags.TemperaturesComfortReadonly = 1;
+  Supla::Control::HvacBase::setTemperatureInStruct(
+      &hvacConfig->Temperatures, TEMPERATURE_ECO, 1700);
+  Supla::Control::HvacBase::setTemperatureInStruct(
+      &hvacConfig->Temperatures, TEMPERATURE_COMFORT, 2300);
+
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+            SUPLA_CONFIG_RESULT_TRUE);
+  EXPECT_EQ(hvac.getTemperatureEco(), 1600);
+  EXPECT_EQ(hvac.getTemperatureComfort(), 2200);
+  hvac.clearChannelConfigChangedFlag();
+
+  Supla::Control::HvacBase::setTemperatureInStruct(
+      &hvacConfig->Temperatures, TEMPERATURE_HEAT_COOL_OFFSET_MIN, 300);
+  Supla::Control::HvacBase::setTemperatureInStruct(
+      &hvacConfig->Temperatures, TEMPERATURE_HEAT_COOL_OFFSET_MAX, 1200);
+
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+            SUPLA_CONFIG_RESULT_TRUE);
+  EXPECT_EQ(hvac.getTemperatureHeatCoolOffsetMin(), 200);
+  EXPECT_EQ(hvac.getTemperatureHeatCoolOffsetMax(), 1000);
 }
 
 TEST_F(HvacTestsF, PumpHeatSourceMasterNotSetCheck) {
@@ -2259,7 +2595,11 @@ TEST_F(HvacTestsF, PumpHeatSourceMasterSetAfterInitCheck) {
   OutputSimulatorWithCheck output;
 
   Supla::Control::HvacBase hvac(&output);
+  Supla::Control::Relay pumpRelay(1);
+  Supla::Control::Relay sourceRelay(2);
+  Supla::Control::HvacBase master;
   hvac.getChannel()->setChannelNumber(5);
+  master.getChannel()->setChannelNumber(3);
 
   auto ch = hvac.getChannel();
   ASSERT_NE(ch, nullptr);
@@ -2324,7 +2664,17 @@ TEST_F(HvacTestsF, PumpHeatSourceMasterSetBeforeInitCheck) {
   OutputSimulatorWithCheck output;
 
   Supla::Control::HvacBase hvac(&output);
+  Supla::Control::Relay relay1(1);
+  Supla::Control::Relay relay2(2);
+  Supla::Control::HvacBase master;
+  Supla::Control::HvacBase master13;
+  Supla::Control::Relay relay11(11);
+  Supla::Control::Relay relay12(12);
+  relay11.getChannel()->setChannelNumber(11);
+  relay12.getChannel()->setChannelNumber(12);
   hvac.getChannel()->setChannelNumber(5);
+  master.getChannel()->setChannelNumber(3);
+  master13.getChannel()->setChannelNumber(13);
 
   auto ch = hvac.getChannel();
   ASSERT_NE(ch, nullptr);
@@ -2479,7 +2829,7 @@ TEST_F(HvacTestsF, handleChannelConfigWithTemperatureControlTypes) {
   TSD_ChannelConfig configFromServer = {};
   configFromServer.ConfigType = SUPLA_CONFIG_TYPE_DEFAULT;
   configFromServer.Func = SUPLA_CHANNELFNC_HVAC_THERMOSTAT;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
 
   TChannelConfig_HVAC *hvacConfig =
@@ -2498,7 +2848,7 @@ TEST_F(HvacTestsF, handleChannelConfigWithTemperatureControlTypes) {
   Supla::Control::HvacBase::setTemperatureInStruct(
       &hvacConfig->Temperatures, TEMPERATURE_AUX_MIN_SETPOINT, 1000);
 
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
 
   EXPECT_TRUE(hvac.isTemperatureControlTypeMain());
@@ -2506,7 +2856,7 @@ TEST_F(HvacTestsF, handleChannelConfigWithTemperatureControlTypes) {
 
   hvacConfig->TemperatureControlType =
       SUPLA_HVAC_TEMPERATURE_CONTROL_TYPE_AUX_HEATER_COOLER_TEMPERATURE;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
 
   EXPECT_TRUE(hvac.isTemperatureControlTypeMain());
@@ -2521,7 +2871,7 @@ TEST_F(HvacTestsF, handleChannelConfigWithTemperatureControlTypes) {
 
   hvacConfig->TemperatureControlType =
       SUPLA_HVAC_TEMPERATURE_CONTROL_TYPE_AUX_HEATER_COOLER_TEMPERATURE;
-  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer),
+  EXPECT_EQ(hvac.handleChannelConfig(&configFromServer, false),
             SUPLA_CONFIG_RESULT_TRUE);
 
   EXPECT_FALSE(hvac.isTemperatureControlTypeMain());

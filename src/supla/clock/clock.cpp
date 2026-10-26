@@ -1,20 +1,5 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
-
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
-
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <supla/log_wrapper.h>
 #include <supla/storage/config.h>
@@ -111,19 +96,25 @@ time_t Clock::GetTimeStamp() {
   return 0;
 }
 
+bool Clock::GetLocalTime(struct tm *timeInfo) {
+  return IsReady() && clockInstance->getLocalTime(timeInfo);
+}
+
 Clock* Clock::GetInstance() {
   return clockInstance;
 }
 
 Clock::Clock() {
-  if (clockInstance) {
-    delete clockInstance;
+  if (clockInstance != nullptr) {
+    SUPLA_LOG_ERROR("Clock: replacing an existing instance");
   }
   clockInstance = this;
 }
 
 Clock::~Clock() {
-  clockInstance = nullptr;
+  if (clockInstance == this) {
+    clockInstance = nullptr;
+  }
 }
 
 bool Clock::isReady() {
@@ -197,6 +188,20 @@ time_t Clock::getTimeStamp() {
   return currentTime;
 }
 
+bool Clock::getLocalTime(struct tm *timeInfo) {
+  if (timeInfo == nullptr) {
+    return false;
+  }
+  time_t currentTime = getTimeStamp();
+#if defined(__AVR__)
+  // AVR libc declares localtime_r as void; there is no status value to test.
+  localtime_r(&currentTime, timeInfo);
+  return true;
+#else
+  return localtime_r(&currentTime, timeInfo) != nullptr;
+#endif
+}
+
 void Clock::parseLocaltimeFromServer(TSDC_UserLocalTimeResult *result) {
   struct tm timeinfo {};
   printCurrentTime("current");
@@ -251,6 +256,10 @@ void Clock::onLoadConfig(SuplaDeviceClass *sdc) {
   auto cfg = Supla::Storage::ConfigInstance();
   if (cfg) {
     if (useAutomaticTimeSyncRemoteConfig) {
+      // AutomaticTimeSyncCfgTag caches the server-provided remote value; it
+      // is not a local user preference. If remote configuration is disabled,
+      // this value must not be used, intentionally restoring local/default
+      // behavior.
       // register DeviceConfig field bit:
       Supla::Device::RemoteDeviceConfig::RegisterConfigField(
           SUPLA_DEVICE_CONFIG_FIELD_AUTOMATIC_TIME_SYNC);
@@ -268,7 +277,10 @@ void Clock::onLoadConfig(SuplaDeviceClass *sdc) {
 }
 
 void Clock::onDeviceConfigChange(uint64_t fieldBit) {
-  if (fieldBit == SUPLA_DEVICE_CONFIG_FIELD_AUTOMATIC_TIME_SYNC) {
+  // Do not apply the cached server value when remote configuration is
+  // disabled; local/default automatic time synchronization remains in effect.
+  if (fieldBit == SUPLA_DEVICE_CONFIG_FIELD_AUTOMATIC_TIME_SYNC &&
+      useAutomaticTimeSyncRemoteConfig) {
     auto cfg = Supla::Storage::ConfigInstance();
     if (cfg) {
       uint8_t value = 1;

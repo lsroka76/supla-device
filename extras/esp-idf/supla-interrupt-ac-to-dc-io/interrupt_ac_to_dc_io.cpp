@@ -1,45 +1,43 @@
-/*
-   Copyright (C) AC SOFTWARE SP. Z O.O
-
-   This program is free software; you can redistribute it and/or
-   modify it under the terms of the GNU General Public License
-   as published by the Free Software Foundation; either version 2
-   of the License, or (at your option) any later version.
-
-   This program is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
-
-   You should have received a copy of the GNU General Public License
-   along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-   */
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "interrupt_ac_to_dc_io.h"
 
+#include <supla/input_noise_guard.h>
 #include <supla/log_wrapper.h>
 #include <supla/time.h>
+#ifdef SUPLA_TEST
+#include <interrupt_ac_to_dc_io_esp_idf_stubs.h>
+#else
 #include <driver/gpio.h>
 #include <hal/gpio_types.h>
 #include <esp_attr.h>
 #include <esp_intr_alloc.h>
+#include <freertos/FreeRTOS.h>
+#endif
 
 using Supla::InterruptAcToDcIo;
 
 namespace {
-static volatile uint8_t gpioInterrupts[INTERRUPT_AC_TO_DC_IO_MAX_GPIOS] = {};
+static volatile uint8_t
+gpioInterruptCounts[INTERRUPT_AC_TO_DC_IO_MAX_GPIOS] = {};
+static portMUX_TYPE gpioInterruptCountsMux = portMUX_INITIALIZER_UNLOCKED;
 
 void IRAM_ATTR interruptHandler(void* arg) {
-  uint32_t gpioNum = reinterpret_cast<uint32_t>(arg);
+  uintptr_t gpioNum = reinterpret_cast<uintptr_t>(arg);
   if (gpioNum < INTERRUPT_AC_TO_DC_IO_MAX_GPIOS) {
-    gpioInterrupts[gpioNum] = 1;
+    portENTER_CRITICAL_ISR(&gpioInterruptCountsMux);
+    uint8_t interruptCount = gpioInterruptCounts[gpioNum];
+    if (interruptCount < 255) {
+      gpioInterruptCounts[gpioNum] = interruptCount + 1;
+    }
+    portEXIT_CRITICAL_ISR(&gpioInterruptCountsMux);
   }
 }
 
 }  // namespace
 
-InterruptAcToDcIo::InterruptAcToDcIo() : Supla::Io::Base(false) {
+InterruptAcToDcIo::InterruptAcToDcIo() : Supla::Io::Base() {
   for (int i = 0; i < INTERRUPT_AC_TO_DC_IO_MAX_GPIOS; i++) {
     gpioState[i] = 255;
   }
@@ -49,7 +47,8 @@ InterruptAcToDcIo::~InterruptAcToDcIo() {
 }
 
 void InterruptAcToDcIo::addGpio(int gpio,
-                                int32_t minOffTimeoutMs) {
+                                int32_t minOffTimeoutMs,
+                                uint8_t minQuietBeforeNextActivityMs) {
   if (isInitialized()) {
     SUPLA_LOG_ERROR("InterruptAcToDcIo already initialized - can't add GPIO");
     return;
@@ -61,7 +60,9 @@ void InterruptAcToDcIo::addGpio(int gpio,
   }
 
   gpioMinOffTimeout[gpio] = minOffTimeoutMs;
-  if (minOffTimeoutMs > initCounter) {
+  gpioMinQuietBeforeNextActivityMs[gpio] = minQuietBeforeNextActivityMs;
+  if (minOffTimeoutMs > 0 &&
+      static_cast<uint32_t>(minOffTimeoutMs) > initCounter) {
     initCounter = minOffTimeoutMs;
   }
   gpioState[gpio] = 0;
@@ -127,9 +128,26 @@ bool InterruptAcToDcIo::isReady() const {
   return initialized && initCounter == 0;
 }
 
+void InterruptAcToDcIo::enableInputNoiseGuardForGpio(int gpio, bool enabled) {
+  if (gpio < 0 || gpio >= INTERRUPT_AC_TO_DC_IO_MAX_GPIOS) {
+    SUPLA_LOG_ERROR("InterruptAcToDcIo: Invalid GPIO number %d", gpio);
+    return;
+  }
+  gpioInputNoiseGuardEnabled[gpio] = enabled ? 1 : 0;
+}
+
+void InterruptAcToDcIo::disableInputNoiseGuardForGpio(int gpio) {
+  enableInputNoiseGuardForGpio(gpio, false);
+}
+
 int InterruptAcToDcIo::customDigitalRead(int channelNumber, uint8_t pin) {
+  (void)channelNumber;
   if (!isInitialized()) {
     SUPLA_LOG_ERROR("InterruptAcToDcIo: not initialized");
+    return 0;
+  }
+  if (pin >= INTERRUPT_AC_TO_DC_IO_MAX_GPIOS) {
+    SUPLA_LOG_ERROR("InterruptAcToDcIo: Invalid GPIO number %d", pin);
     return 0;
   }
   if (gpioState[pin] == 255) {
@@ -149,21 +167,105 @@ void InterruptAcToDcIo::onFastTimer() {
     if (gpioState[i] == 255) {
       continue;
     }
-    if (gpioInterrupts[i] == 1) {
-      gpioInterrupts[i] = 0;
-      if (gpioState[i] == 0) {
-        gpioState[i] = 2;
-      } else if (gpioState[i] == 2) {
-        // for "AC" case we update to ON after second interrupt
-        SUPLA_LOG_DEBUG(" *** GPIO %d is ON (AC) ***", i);
-        gpioState[i] = 1;
+    portENTER_CRITICAL(&gpioInterruptCountsMux);
+    uint8_t interruptCount = gpioInterruptCounts[i];
+    if (interruptCount > 0) {
+      gpioInterruptCounts[i] = 0;
+    }
+    portEXIT_CRITICAL(&gpioInterruptCountsMux);
+
+    if (gpioInputNoiseGuardEnabled[i] &&
+        Supla::InputNoiseGuard::IsActive()) {
+      gpioInputNoiseGuardWasActive[i] = 1;
+      gpioRawActivitySeen[i] = 0;
+      gpioLastRawTimestampMs[i] = 0;
+      gpioAcCandidatePackets[i] = 0;
+      gpioAcCandidateFirstTimestampMs[i] = 0;
+      gpioAcCandidateLastPacketTimestampMs[i] = 0;
+      if (gpioState[i] == 1 || gpioState[i] == 2) {
+        gpioLastTimestampMs[i] = now;
       }
-      gpioLastTimestampMs[i] = now;
+      continue;
+    }
+
+    if (gpioInputNoiseGuardEnabled[i] &&
+        gpioInputNoiseGuardWasActive[i]) {
+      gpioInputNoiseGuardWasActive[i] = 0;
+      gpioRawActivitySeen[i] = 0;
+      gpioLastRawTimestampMs[i] = 0;
+      gpioAcCandidatePackets[i] = 0;
+      gpioAcCandidateFirstTimestampMs[i] = 0;
+      gpioAcCandidateLastPacketTimestampMs[i] = 0;
+
+      if (gpio_get_level(static_cast<gpio_num_t>(i)) == offStateLevel) {
+        gpioLastTimestampMs[i] = gpioState[i] == 0 ? 0 : now;
+      } else if (gpioState[i] == 1) {
+        gpioLastTimestampMs[i] = 0;
+      } else {
+        gpioState[i] = 2;
+        gpioLastTimestampMs[i] = now;
+      }
+      continue;
+    }
+
+    if (interruptCount > 0) {
+//      SUPLA_LOG_DEBUG("GPIO %d INTR COUNT %d", i, interruptCount);
+      bool acceptActivity = gpioRawActivitySeen[i] == 0 ||
+          now - gpioLastRawTimestampMs[i] >=
+              gpioMinQuietBeforeNextActivityMs[i];
+      gpioRawActivitySeen[i] = 1;
+      gpioLastRawTimestampMs[i] = now;
+
+      if (gpioState[i] == 1 || gpioState[i] == 2) {
+        gpioLastTimestampMs[i] = now;
+      }
+
+      if (acceptActivity) {
+        // AC is accepted only after a periodic activity run. The interrupt
+        // count is deliberately ignored because it varies between GPIOs.
+        if (gpioState[i] == 0) {
+          gpioState[i] = 2;
+          gpioAcCandidateFirstTimestampMs[i] = now;
+          gpioAcCandidateLastPacketTimestampMs[i] = now;
+          gpioAcCandidatePackets[i] = 1;
+          gpioLastTimestampMs[i] = now;
+        } else if (gpioState[i] == 2) {
+          uint32_t candidateSpanMs =
+              now - gpioAcCandidateFirstTimestampMs[i];
+          uint32_t packetGapMs =
+              now - gpioAcCandidateLastPacketTimestampMs[i];
+          if (gpioAcCandidatePackets[i] == 0 ||
+              candidateSpanMs > INTERRUPT_AC_TO_DC_IO_AC_ON_WINDOW_MS ||
+              packetGapMs > INTERRUPT_AC_TO_DC_IO_AC_ON_MAX_PACKET_GAP_MS) {
+            gpioAcCandidateFirstTimestampMs[i] = now;
+            gpioAcCandidateLastPacketTimestampMs[i] = now;
+            gpioAcCandidatePackets[i] = 1;
+            candidateSpanMs = 0;
+          } else if (gpioAcCandidatePackets[i] < 255) {
+            gpioAcCandidatePackets[i]++;
+            gpioAcCandidateLastPacketTimestampMs[i] = now;
+          }
+
+          if (gpioAcCandidatePackets[i] >=
+                  INTERRUPT_AC_TO_DC_IO_AC_ON_MIN_PACKETS &&
+              candidateSpanMs >= INTERRUPT_AC_TO_DC_IO_AC_ON_MIN_SPAN_MS) {
+            SUPLA_LOG_DEBUG(" *** GPIO %d is ON (AC) ***", i);
+            gpioState[i] = 1;
+            gpioAcCandidatePackets[i] = 0;
+            gpioAcCandidateFirstTimestampMs[i] = 0;
+            gpioAcCandidateLastPacketTimestampMs[i] = 0;
+          }
+        }
+      }
       continue;
     }
     if (gpioLastTimestampMs[i] != 0 &&
-        now - gpioLastTimestampMs[i] > gpioMinOffTimeout[i]) {
+        now - static_cast<uint32_t>(gpioLastTimestampMs[i]) >
+            static_cast<uint32_t>(gpioMinOffTimeout[i])) {
       gpioLastTimestampMs[i] = 0;
+      gpioAcCandidatePackets[i] = 0;
+      gpioAcCandidateFirstTimestampMs[i] = 0;
+      gpioAcCandidateLastPacketTimestampMs[i] = 0;
       if (gpio_get_level(static_cast<gpio_num_t>(i)) == offStateLevel) {
         gpioState[i] = 0;
         SUPLA_LOG_DEBUG(" *** GPIO %d is OFF ***", i);
@@ -183,5 +285,8 @@ void InterruptAcToDcIo::setOffStateLevel(uint8_t level) {
 void InterruptAcToDcIo::customPinMode(int channelNumber,
                                       uint8_t pin,
                                       uint8_t mode) {
+  (void)channelNumber;
+  (void)pin;
+  (void)mode;
   // do nothing
 }

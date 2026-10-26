@@ -1,20 +1,5 @@
-/*
-   Copyright (C) AC SOFTWARE SP. Z O.O
-
-   This program is free software; you can redistribute it and/or
-   modify it under the terms of the GNU General Public License
-   as published by the Free Software Foundation; either version 2
-   of the License, or (at your option) any later version.
-
-   This program is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
-
-   You should have received a copy of the GNU General Public License
-   along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-   */
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "time_parameters.h"
 
@@ -31,6 +16,63 @@
 #include <supla/clock/clock.h>
 
 using Supla::Html::TimeParameters;
+
+namespace {
+
+bool parseDigits(const char *value,
+                 size_t offset,
+                 size_t count,
+                 int *result) {
+  int parsed = 0;
+  for (size_t i = 0; i < count; i++) {
+    const char digit = value[offset + i];
+    if (digit < '0' || digit > '9') {
+      return false;
+    }
+    parsed = parsed * 10 + (digit - '0');
+  }
+  *result = parsed;
+  return true;
+}
+
+bool parseDateTimeLocal(const char *value, struct tm *result) {
+  if (value == nullptr || result == nullptr) {
+    return false;
+  }
+
+  const size_t length = strlen(value);
+  const bool hasSeconds = length == 19;
+  if ((!hasSeconds && length != 16) || value[4] != '-' ||
+      value[7] != '-' || value[10] != 'T' || value[13] != ':' ||
+      (hasSeconds && value[16] != ':')) {
+    return false;
+  }
+
+  int year = 0;
+  int month = 0;
+  int day = 0;
+  int hour = 0;
+  int minute = 0;
+  int second = 0;
+  if (!parseDigits(value, 0, 4, &year) ||
+      !parseDigits(value, 5, 2, &month) ||
+      !parseDigits(value, 8, 2, &day) ||
+      !parseDigits(value, 11, 2, &hour) ||
+      !parseDigits(value, 14, 2, &minute) ||
+      (hasSeconds && !parseDigits(value, 17, 2, &second))) {
+    return false;
+  }
+
+  result->tm_year = year - 1900;
+  result->tm_mon = month - 1;
+  result->tm_mday = day;
+  result->tm_hour = hour;
+  result->tm_min = minute;
+  result->tm_sec = hasSeconds ? second : 0;
+  return true;
+}
+
+}  // namespace
 
 TimeParameters::TimeParameters(SuplaDeviceClass* sdc)
     : HtmlElement(HTML_SECTION_FORM), sdc(sdc) {
@@ -147,11 +189,9 @@ bool TimeParameters::handleResponse(const char* key, const char* value) {
     auto clock = Supla::Clock::GetInstance();
     if (value && clock) {
       struct tm userTime = {};
-      if (strptime(value, "%Y-%m-%dT%H:%M:%S", &userTime) == NULL) {
-        if (strptime(value, "%Y-%m-%dT%H:%M", &userTime) == NULL) {
-          SUPLA_LOG_DEBUG("Parsing date time failed");
-          return true;
-        }
+      if (!parseDateTimeLocal(value, &userTime)) {
+        SUPLA_LOG_DEBUG("Parsing date time failed");
+        return true;
       }
       SUPLA_LOG_DEBUG("year =%d, month=%d, day=%d, hour=%d, min=%d, sec=%d",
                       userTime.tm_year, userTime.tm_mon,

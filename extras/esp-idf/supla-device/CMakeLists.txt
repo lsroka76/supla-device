@@ -21,6 +21,7 @@ set(SUPLA_DEVICE_PORTING_SRCS
 idf_component_register(SRCS
   ${SUPLA_DEVICE_PORTING_SRCS}
   REQUIRES
+    lwip
     esp-tls
     nvs_flash
     spiffs
@@ -54,10 +55,13 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
 target_compile_definitions(${COMPONENT_LIB} PUBLIC SUPLA_DEVICE_ESP32)
 if (CONFIG_SUPLA_DEBUG_BUILD)
   target_compile_definitions(${COMPONENT_LIB} PUBLIC SUPLA_DEBUG)
+  if (CONFIG_SUPLA_INSECURE_DEBUG_INTERFACE)
+    target_compile_definitions(${COMPONENT_LIB} PUBLIC
+      SUPLA_INSECURE_DEBUG_INTERFACE=1)
+  endif()
   if (CONFIG_SUPLA_DISABLE_LOGS)
     target_compile_definitions(${COMPONENT_LIB} PUBLIC SUPLA_DISABLE_LOGS)
   endif()
 else()
   target_compile_definitions(${COMPONENT_LIB} PUBLIC SUPLA_DISABLE_LOGS)
 endif()
-

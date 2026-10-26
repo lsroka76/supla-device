@@ -1,18 +1,5 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "therm_hygro_meter.h"
 
@@ -207,7 +194,8 @@ Supla::ApplyConfigResult Supla::Sensor::ThermHygroMeter::applyChannelConfig(
         reinterpret_cast<TChannelConfig_TemperatureAndHumidity *>(
             result->Config);
 
-    if (channelConfigState != Supla::ChannelConfigState::LocalChangePending) {
+    if (getChannelConfigState() !=
+        Supla::ChannelConfigState::LocalChangePending) {
       if (configFromServer->MinTemperatureAdjustment !=
               -minMaxAllowedTemperatureAdjustment * 10 ||
           configFromServer->MaxTemperatureAdjustment !=
@@ -251,9 +239,10 @@ void Supla::Sensor::ThermHygroMeter::setHumidityCorrection(int32_t correction) {
 void Supla::Sensor::ThermHygroMeter::applyCorrectionsAndStoreIt(
     int32_t temperatureCorrection, int32_t humidityCorrection, bool local) {
   if (local) {
-    channelConfigState = Supla::ChannelConfigState::LocalChangePending;
+    setAndSaveConfigChangeFlag(true);
   } else {
-    channelConfigState = Supla::ChannelConfigState::None;
+    setChannelConfigState(Supla::ChannelConfigState::None);
+    setAndSaveConfigChangeFlag(false);
   }
 
   setTemperatureCorrection(temperatureCorrection);
@@ -263,8 +252,6 @@ void Supla::Sensor::ThermHygroMeter::applyCorrectionsAndStoreIt(
   if (!cfg) {
     return;
   }
-
-  saveConfigChangeFlag();
 
   // reload config
   onLoadConfig(nullptr);

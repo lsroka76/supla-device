@@ -1,18 +1,5 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #ifndef SRC_SUPLA_CLOCK_CLOCK_H_
 #define SRC_SUPLA_CLOCK_CLOCK_H_
@@ -28,19 +15,90 @@ const char AutomaticTimeSyncCfgTag[] = "timesync_auto";
 
 class Clock : public Element {
  public:
+  /**
+  * Checks if Clock is set and ready.
+  *
+  * @return true if Clock is set and ready
+  */
   static bool IsReady();
-  static int GetYear();
-  static int GetMonth();
-  static int GetDay();
-  static int GetDayOfWeek();  // 1 - Sunday, 2 - Monday
-  static enum DayOfWeek GetHvacDayOfWeek();  // 0 - Sunday, 1 - Monday as enum
-  static int GetHour();
-  static int GetQuarter();  // 0 - 0..14 min, 1 - 15..29 min, 2 - 30..44 min, 3
-                            // - 45..59 min
-  static int GetMin();
-  static int GetSec();
-  static time_t GetTimeStamp();
 
+  /**
+  * Returns year from Clock (if is set and ready).
+  *
+  * @return the year (1900..)
+  */
+  static int GetYear();
+
+  /**
+  * Returns month from Clock (if is set and ready).
+  *
+  * @return the month (1..12)
+  */
+  static int GetMonth();
+
+  /**
+  * Returns day from Clock (if is set and ready).
+  *
+  * @return the day (1..31)
+  */
+  static int GetDay();
+
+  /**
+  * Returns day of week from Clock (if is set and ready).
+  * Example:
+  * 1 - Sunday, 7 - Saturday
+  *
+  * @return the day of week (1..7)
+  */
+  static int GetDayOfWeek();
+
+  /**
+  * Returns day of week from Clock to HVAC (if is set and ready).
+  * Example:
+  * 0 - Sunday, 6 - Saturday
+  *
+  * @return the day of week as enum (0..6)
+  */
+  static enum DayOfWeek GetHvacDayOfWeek();
+
+  /**
+  * Returns hour from Clock (if is set and ready).
+  *
+  * @return the hour (0..23)
+  */
+  static int GetHour();
+
+  /**
+  * Returns quarter from Clock (if is set and ready).
+  * Example:
+  * 0 - (0..14 min), 1 - (15..29 min), 2 - (30..44 min), 3 - (45..59 min)
+  *
+  * @return the quarter (0..3)
+  */
+  static int GetQuarter();
+
+  /**
+  * Returns minutes from Clock (if is set and ready).
+  *
+  * @return the minutes (0..59)
+  */
+  static int GetMin();
+
+  /**
+  * Returns seconds from Clock (if is set and ready).
+  *
+  * @return the seconds (0..59)
+  */
+  static int GetSec();
+
+  static time_t GetTimeStamp();
+  static bool GetLocalTime(struct tm *timeInfo);
+
+  /**
+  * Returns pointer of Clock
+  *
+  * @return pointer of Clock
+  */
   static Clock* GetInstance();
 
   Clock();
@@ -57,6 +115,7 @@ class Clock : public Element {
   virtual int getMin();
   virtual int getSec();
   virtual time_t getTimeStamp();
+  virtual bool getLocalTime(struct tm *timeInfo);
 
   void onTimer() override;
   bool iterateConnected() override;

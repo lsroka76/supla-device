@@ -1,20 +1,5 @@
-/*
- * Copyright (C) AC SOFTWARE SP. Z O.O
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
- */
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <SuplaDevice.h>
 #include <channel_element_mock.h>
@@ -24,6 +9,9 @@
 #include <network_with_mac_mock.h>
 #include <supla/device/register_device.h>
 #include <supla/protocol/mqtt.h>
+
+#include <array>
+#include <string>
 
 using testing::_;
 using ::testing::DoAll;
@@ -52,6 +40,8 @@ class MqttUT : public Supla::Protocol::Mqtt {
   void publishImp(const char *, const char *, int, bool) override {
   }
   void subscribeImp(const char *, int) override {
+  }
+  void unsubscribeImp(const char *) override {
   }
 
   void test_generateClientId(char result[MQTT_CLIENTID_MAX_SIZE]) {
@@ -141,6 +131,55 @@ TEST_F(MqttProcessDataTests, dataProcessTests) {
       });
   EXPECT_TRUE(mqtt.processData(topic0setOn, payload));
   EXPECT_TRUE(mqtt.processData(topic1setOn, payloadFalse));
+}
+
+TEST_F(MqttProcessDataTests, rejectsOversizedAndUnterminatedInputs) {
+  SuplaDeviceClass sd;
+  MqttUT mqtt(&sd);
+  ConfigMock config;
+  EXPECT_CALL(config, init());
+  NetworkMockWithMac net;
+  ChannelElementMock element;
+  element.getChannel()->setType(SUPLA_CHANNELTYPE_RELAY);
+
+  EXPECT_CALL(config, getMqttPrefix(_)).WillOnce(Return(false));
+  uint8_t mac[] = {1, 2, 3, 4, 5, 0xAB};
+  EXPECT_CALL(net, getMacAddr(_))
+      .WillRepeatedly(DoAll(SetArrayArgument<0>(mac, mac + 6), Return(true)));
+  sd.setName("My Device");
+  mqtt.onInit();
+
+  const std::string topic = std::string(mqtt.test_getPrefix()) +
+                            "/channels/0/set/on";
+  EXPECT_CALL(element, handleNewValueFromServer(_)).Times(0);
+  for (size_t length : {256, 300}) {
+    const std::string oversizedTopic =
+        topic + std::string(length - topic.size(), '/');
+    EXPECT_FALSE(mqtt.processData(oversizedTopic.c_str(), "true"));
+  }
+  std::array<char, MAX_TOPIC_LEN> unterminatedTopic;
+  unterminatedTopic.fill('x');
+  EXPECT_FALSE(mqtt.processData(unterminatedTopic.data(), "true"));
+  std::array<char, MQTT_MAX_PAYLOAD_LEN> unterminatedPayload;
+  unterminatedPayload.fill('x');
+  EXPECT_FALSE(mqtt.processData(topic.c_str(), unterminatedPayload.data()));
+  const std::string oversizedPayload(MQTT_MAX_PAYLOAD_LEN, 'x');
+  EXPECT_FALSE(mqtt.processData(topic.c_str(), oversizedPayload.c_str()));
+
+  const std::string maxTopic = topic + std::string(255 - topic.size(), '/');
+  EXPECT_TRUE(mqtt.processData(maxTopic.c_str(), "true"));
+  const std::string maxPayload(MQTT_MAX_PAYLOAD_LEN - 1, 'x');
+  const std::string actionTopic = std::string(mqtt.test_getPrefix()) +
+                                  "/channels/0/execute_action";
+  EXPECT_TRUE(mqtt.processData(actionTopic.c_str(), maxPayload.c_str()));
+  testing::Mock::VerifyAndClearExpectations(&element);
+
+  EXPECT_CALL(element, handleNewValueFromServer(_))
+      .WillOnce([](TSD_SuplaChannelNewValue *value) {
+        EXPECT_EQ(1, value->value[0]);
+        return 0;
+      });
+  EXPECT_TRUE(mqtt.processData(topic.c_str(), "true"));
 }
 
 TEST_F(MqttProcessDataTests, relaySetOnTests) {

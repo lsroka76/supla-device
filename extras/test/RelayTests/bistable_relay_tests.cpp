@@ -1,20 +1,5 @@
-/*
-   Copyright (C) AC SOFTWARE SP. Z O.O
-
-   This program is free software; you can redistribute it and/or
-   modify it under the terms of the GNU General Public License
-   as published by the Free Software Foundation; either version 2
-   of the License, or (at your option) any later version.
-
-   This program is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
-
-   You should have received a copy of the GNU General Public License
-   along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <arduino_mock.h>
 #include <gmock/gmock.h>
@@ -75,6 +60,15 @@ class BistableRelayFixture : public testing::Test {
   }
 };
 
+class TestableBistableRelay : public Supla::Control::BistableRelay {
+ public:
+  using Supla::Control::BistableRelay::BistableRelay;
+
+  bool applyScheduleState(bool on) {
+    return applyWeeklyScheduleState(on);
+  }
+};
+
 TEST_F(BistableRelayFixture, IoPinConstructorUsesSeparateOutputAndStatusIo) {
   SuplaIoMock outputIo;
   SuplaIoMock statusIo;
@@ -117,6 +111,39 @@ TEST_F(BistableRelayFixture, UnsetIoPinsDoNothing) {
   Supla::Control::BistableRelay relay(outputPin, statusPin);
   relay.onInit();
   EXPECT_TRUE(relay.isStatusUnknown());
+}
+
+TEST_F(BistableRelayFixture, WeeklyScheduleRequiresStatusInput) {
+  Supla::Control::BistableRelay withoutStatus(1);
+  ASSERT_TRUE(withoutStatus.setAndSaveFunction(SUPLA_CHANNELFNC_LIGHTSWITCH));
+  withoutStatus.onLoadConfig(nullptr);
+  EXPECT_FALSE(withoutStatus.isWeeklyScheduleSupported());
+  EXPECT_FALSE(withoutStatus.getChannel()->isWeeklyScheduleAvailable());
+
+  Supla::Control::BistableRelay withStatus(2, 3);
+  ASSERT_TRUE(withStatus.setAndSaveFunction(SUPLA_CHANNELFNC_LIGHTSWITCH));
+  withStatus.onLoadConfig(nullptr);
+  EXPECT_TRUE(withStatus.isWeeklyScheduleSupported());
+  EXPECT_TRUE(withStatus.getChannel()->isWeeklyScheduleAvailable());
+}
+
+TEST_F(BistableRelayFixture, WeeklyScheduleStateWaitsForPendingPulse) {
+  int status = LOW;
+  EXPECT_CALL(ioMock, pinMode(_, _)).Times(::testing::AnyNumber());
+  EXPECT_CALL(ioMock, digitalRead(2)).Times(::testing::AnyNumber());
+  EXPECT_CALL(ioMock, digitalWrite(1, _)).Times(::testing::AnyNumber());
+  ON_CALL(ioMock, digitalRead(2))
+      .WillByDefault(::testing::ReturnPointee(&status));
+  TestableBistableRelay relay(1, 2);
+  relay.onInit();
+
+  relay.turnOn();
+  EXPECT_FALSE(relay.applyScheduleState(false));
+
+  status = HIGH;
+  time.advance(201);
+  relay.iterateAlways();
+  EXPECT_TRUE(relay.applyScheduleState(false));
 }
 
 TEST_F(BistableRelayFixture, basicTests) {

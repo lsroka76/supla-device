@@ -1,5 +1,106 @@
 # CHANGELOG.md
 
+# 26.09.02 (2026-09-23 input handling, channel configuration and platform improvements)
+
+### Generic
+- Preserve local channel configuration changes until the server acknowledges them.
+- Add normal/low battery state reporting for channels and parsed Linux sensors.
+- Add `IoGroup` to drive multiple physical GPIO/PWM outputs from one logical pin, including per-output polarity and interrupt mapping.
+- Add version 29 weekly schedule handling and improve protocol registration, device synchronization and SRPC error reporting.
+- Fix state-storage backup invalidation and roll back partially parsed key-value data after a failed load.
+
+### Buttons, Roller Shutters & Lighting
+- Improve bistable button and ActionTrigger handling for roller shutters, including directional press/release actions, click sequences and paired inputs.
+- Fix roller shutter control through bistable buttons when ActionTrigger is enabled.
+- Add persistent manual suspension for lighting PWM channels and reject control commands while suspended.
+- Fix relay countdown startup when the millisecond counter is zero and refresh MQTT discovery after relay/roller-shutter mode changes.
+
+### Channels & Sensors
+- Validate channel numbers, electricity-meter type masks, HVAC channel assignments and temperature-control types before use.
+- Fix MultiDS online state for invalid readings and add a configurable sensor refresh interval.
+- Improve AC detection reliability, sensor input validation and recovery from disconnected or missing sensors.
+- Add ESP-IDF drivers for PCF85063A clocks and SSD1306 displays, including 32-pixel-high displays and a percent character.
+
+### MQTT, Networking & Web UI
+- Add per-channel MQTT availability reporting and fix HVAC toggle handling for percentage-based heating devices.
+- Add custom local pages to the ESP-IDF web server.
+- Reduce web UI RAM use by serving static assets from program memory; improve Wi-Fi scan handling and HTML buffer validation.
+- Improve ESP-IDF OTA error reporting and retries, and fix Arduino ESP Wi-Fi client lifetime when switching TLS modes.
+
+### ESP-IDF & Arduino
+- Update the stable ESP-IDF build environment to 6.0.2.
+- Reduce SRPC buffer and packet-logging memory use on ESP targets, and move CA certificates out of the `SuplaDevice` header.
+- Fix Arduino source filename collisions and add ESP RGB+CCT and relay/roller-shutter examples.
+
+### Linux / sd4linux
+- Validate YAML channel, icon, QoS, TLS and command settings, and support configurable SUPLA protocol version and custom HVAC/relay state mapping.
+- Preserve arbitrary `CustomChannel` type values and fix YAML configuration object ownership.
+- Add RGB+CCT state configuration and battery state reporting for parsed channels; secure state files and avoid logging parser source contents.
+
+### Experimental
+- Rework Suplet CALCFG transfers and add optional staged instance artifacts with atomic activation. Suplets remain disabled by default and are not production-ready.
+
+# 26.08 (2026-08-14 security, configuration and platform improvements)
+
+### Breaking changes
+- Remove the ESP8266 RTOS SDK target. ESP8266 support through Arduino and PlatformIO remains available.
+- Remove the `Supla::Io::Base` singleton mode. Custom I/O backends must now be passed explicitly, for example through `IoPin` definitions.
+- Remove `SuplaDevice.setPermanentWebInterface()`. Start the local web interface explicitly from device code.
+- Change the default `ModbusConfigurator` mode from RTU slave to disabled.
+
+### Generic
+- Update the SUPLA protocol from version 28 to 29, including device-sync and new device configuration definitions.
+- Add `RelayRollerShutterPair` for devices that can operate as one roller shutter or two relay channels, including runtime and local web interface function switching and configurable relay defaults.
+- Add `InputActivation` and `ThermalProtection` device configuration support.
+- Add countdown-timer remaining-time conditions for local actions.
+- Add automatic timeout handling to `VirtualBinary`, with an option to disable it.
+- Add configurable static IP settings for ESP32 Ethernet and Ethernet SPI interfaces.
+- Add OTA progress observers and Wi-Fi disconnect status reporting.
+- Add a shared input-noise guard for Wi-Fi transitions and improve AC/DC input filtering during reconnects.
+- Add an Arduino Mega W5500 example.
+
+### Roller Shutter
+- Improve roller shutter and facade blind handling when changing functions or configuration, including runtime GPIO cleanup and safer direction switching.
+- Validate facade blind tilt angles, clear obsolete tilt configuration when changing to a non-tilt function and preserve the not-calibrated state when the position becomes unknown.
+- Fix invalid relay state restoration, channel configuration routing and potential division-by-zero errors in roller shutter modes.
+
+### Relay, HVAC & Binary channels
+- Fix relay impulse-state restoration, HVAC protection priority/auxiliary limits and HVAC change handlers.
+- Fix missing turn events for server-inverted Binary channels and add optional startup synchronization for those events.
+- Add the `AlarmMuted` BinarySensor configuration field and fix invalid `BinaryParsed` state sequences.
+
+### Sensors & Integrations
+- Improve MultiDS / DS18B20 support by separating internal array indexes from `SubDeviceId`, adding an ESP-IDF backend and pairing/conflict observers.
+- Add SHT10 library support with an example and validate the configured Fronius device type.
+- Add SolarEdge support to `sd4linux` and certificate verification for SolarEdge and AQI.ECO connections.
+
+### MQTT, Networking & Web UI
+- Add MQTT broker certificate verification on ESP-IDF and Linux, with custom CA or system-bundle support, detailed TLS/connection errors and a legacy-compatible verification opt-out.
+- Remove unused MQTT discovery and state topics after channel function or function-list changes.
+- Fix Home Assistant device classes, balanced active/reactive energy discovery, MQTT initialization-order handling and an MQTT out-of-bounds write.
+- Improve local Wi-Fi configuration with cyclic scanning, network selection, RSSI/signal quality and warning/error reporting.
+- Add local web interface support for roller shutter/relay function settings, timer turn-on time, privacy mode and safer configuration form handling.
+
+### Security, Storage & Reliability
+- Redact credentials and other sensitive data from logs and improve HTTPS/OTA certificate handling, including protection against unintended HTTP fallback.
+- Add CSRF protection to configuration forms and `SameSite=Lax` cookies on ESP-IDF; login/setup pages remain exempt by default for mobile-app compatibility.
+- Add additional storage metadata, CRC and bounds validation, and fix state-storage writes beyond the configured partition.
+- Fix buffer-boundary, memory-leak and use-after-free issues across OCR, MQTT, OTA, SRPC and related components.
+- Improve SRPC handling of write failures, reconnect backoff and recovery after protocol version errors.
+- Fix configuration-mode/offline-mode transitions and restore local actions correctly after startup.
+- Document Arduino storage limitations and make the insecure `ButtonUpdate` path an explicit opt-in.
+
+### ESP-IDF & Arduino
+- Update the stable ESP-IDF build environment to ESP-IDF 6.0.1 and adapt the ESP-IDF components and examples.
+- Fix ESP8266 Arduino stack corruption after `DeviceConfig`, Arduino Mega compilation issues, PWM scaling on platforms with non-10-bit resolution, lighting output cleanup after function changes and warm/cold output selection.
+
+### Linux / sd4linux
+- Add an HTTP source with a SmartThings washer example, optional `curl` support, compile-time extensions and manufacturer/product configuration.
+- Improve TLS validation and YAML diagnostics, limit HTTP source responses and fix command injection in command-output handling.
+
+### Experimental
+- Add the work-in-progress Suplet subsystem with JSON definitions, cached definitions, instance management, runtime handlers and storage migration. It is not production-ready and remains disabled by default.
+
 # 26.04 (2026-04-02 IoPin & Lighting PWM)
 
 ### Breaking changes

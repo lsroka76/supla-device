@@ -1,20 +1,5 @@
-/*
-   Copyright (C) AC SOFTWARE SP. Z O.O
-
-   This program is free software; you can redistribute it and/or
-   modify it under the terms of the GNU General Public License
-   as published by the Free Software Foundation; either version 2
-   of the License, or (at your option) any later version.
-
-   This program is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
-
-   You should have received a copy of the GNU General Public License
-   along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <clock_stub.h>
 #include <config_mock.h>
@@ -88,9 +73,13 @@ TEST_F(HvacIntegrationScheduleF, startupWithEmptyConfigHeating) {
   EXPECT_TRUE(hvac->getChannel()->isWeeklyScheduleAvailable());
 
   EXPECT_CALL(cfg, saveWithDelay(_)).Times(AtLeast(1));
+  TChannelConfig_WeeklySchedule storedWeeklySchedule = {};
+  bool weeklyScheduleStored = false;
 
   EXPECT_CALL(cfg, getInt32(StrEq("0_fnc"), _))
       .Times(1)
+      .WillOnce(Return(false));
+  EXPECT_CALL(cfg, getUInt32(StrEq("0_cfg_chng_t"), _))
       .WillOnce(Return(false));
   EXPECT_CALL(cfg, getUInt8(StrEq("0_cfg_chng"), _))
       .Times(1)
@@ -104,19 +93,38 @@ TEST_F(HvacIntegrationScheduleF, startupWithEmptyConfigHeating) {
   EXPECT_CALL(
       cfg,
       getBlob(StrEq("0_hvac_weekly"), _, sizeof(TChannelConfig_WeeklySchedule)))
-      .Times(1)
-      .WillOnce(Return(false));
+      .Times(AtLeast(1))
+      .WillRepeatedly([&](const char *,
+                         char *buf,
+                         int size) {
+        if (weeklyScheduleStored) {
+          memcpy(buf, &storedWeeklySchedule, size);
+          return true;
+        }
+        memset(buf, 0, size);
+        return false;
+      });
+  EXPECT_CALL(cfg,
+              getBlob(StrEq("0_hvac_aweekly"), _,
+                      sizeof(TChannelConfig_WeeklySchedule)))
+      .Times(0);
   EXPECT_CALL(cfg, setInt32(StrEq("0_fnc"), SUPLA_CHANNELFNC_HVAC_THERMOSTAT))
       .Times(1)
       .WillOnce(Return(true));
 
   EXPECT_CALL(cfg, setBlob(StrEq("0_hvac_weekly"), _, _))
-      .WillRepeatedly(Return(true));
+      .WillRepeatedly([&](const char *, const char *buf, int size) {
+        memcpy(&storedWeeklySchedule, buf, size);
+        weeklyScheduleStored = true;
+        return true;
+      });
   EXPECT_CALL(cfg, setBlob(StrEq("0_hvac_aweekly"), _, _))
-      .WillRepeatedly(Return(true));
+      .Times(0);
   EXPECT_CALL(cfg, setUInt8(StrEq("0_weekly_ignr"), _))
       .WillRepeatedly(Return(true));
   EXPECT_CALL(cfg, setUInt8(StrEq("0_weekly_chng"), _))
+      .WillRepeatedly(Return(true));
+  EXPECT_CALL(cfg, setUInt8(StrEq("0_cfg_chng"), _))
       .WillRepeatedly(Return(true));
 
   EXPECT_CALL(storage, readStorage(_, _, sizeof(THVACValue), _))
@@ -263,7 +271,7 @@ TEST_F(HvacIntegrationScheduleF, startupWithEmptyConfigHeating) {
   weeklySchedule->Quarters[0] = (1 | (2 << 4));
   weeklySchedule->Quarters[1] = 3;
 
-  EXPECT_EQ(hvac->handleWeeklySchedule(&configFromServer),
+  EXPECT_EQ(hvac->handleWeeklySchedule(&configFromServer, false, false),
             SUPLA_CONFIG_RESULT_TRUE);
 
   for (int i = 0; i < 60; ++i) {
@@ -494,9 +502,13 @@ TEST_F(HvacIntegrationScheduleF, mixedCommandsCheck) {
   EXPECT_TRUE(hvac->getChannel()->isWeeklyScheduleAvailable());
 
   EXPECT_CALL(cfg, saveWithDelay(_)).Times(AtLeast(1));
+  TChannelConfig_WeeklySchedule storedWeeklySchedule = {};
+  bool weeklyScheduleStored = false;
 
   EXPECT_CALL(cfg, getInt32(StrEq("0_fnc"), _))
       .Times(1)
+      .WillOnce(Return(false));
+  EXPECT_CALL(cfg, getUInt32(StrEq("0_cfg_chng_t"), _))
       .WillOnce(Return(false));
   EXPECT_CALL(cfg, getUInt8(StrEq("0_cfg_chng"), _))
       .Times(1)
@@ -510,20 +522,35 @@ TEST_F(HvacIntegrationScheduleF, mixedCommandsCheck) {
   EXPECT_CALL(
       cfg,
       getBlob(StrEq("0_hvac_weekly"), _, sizeof(TChannelConfig_WeeklySchedule)))
-      .Times(1)
-      .WillOnce(Return(false));
+      .Times(AtLeast(1))
+      .WillRepeatedly([&](const char *,
+                         char *buf,
+                         int size) {
+        if (weeklyScheduleStored) {
+          memcpy(buf, &storedWeeklySchedule, size);
+          return true;
+        }
+        memset(buf, 0, size);
+        return false;
+      });
   EXPECT_CALL(
       cfg, setInt32(StrEq("0_fnc"), SUPLA_CHANNELFNC_HVAC_THERMOSTAT_HEAT_COOL))
       .Times(1)
       .WillOnce(Return(true));
 
   EXPECT_CALL(cfg, setBlob(StrEq("0_hvac_weekly"), _, _))
-      .WillRepeatedly(Return(true));
+      .WillRepeatedly([&](const char *, const char *buf, int size) {
+        memcpy(&storedWeeklySchedule, buf, size);
+        weeklyScheduleStored = true;
+        return true;
+      });
   EXPECT_CALL(cfg, setBlob(StrEq("0_hvac_aweekly"), _, _))
       .WillRepeatedly(Return(true));
   EXPECT_CALL(cfg, setUInt8(StrEq("0_weekly_ignr"), _))
       .WillRepeatedly(Return(true));
   EXPECT_CALL(cfg, setUInt8(StrEq("0_weekly_chng"), _))
+      .WillRepeatedly(Return(true));
+  EXPECT_CALL(cfg, setUInt8(StrEq("0_cfg_chng"), _))
       .WillRepeatedly(Return(true));
 
   EXPECT_CALL(storage, readStorage(_, _, sizeof(THVACValue), _))
@@ -646,7 +673,7 @@ TEST_F(HvacIntegrationScheduleF, mixedCommandsCheck) {
   weeklySchedule->Quarters[0] = (1 | (2 << 4));
   weeklySchedule->Quarters[1] = 3;
 
-  EXPECT_EQ(hvac->handleWeeklySchedule(&configFromServer),
+  EXPECT_EQ(hvac->handleWeeklySchedule(&configFromServer, false, false),
             SUPLA_CONFIG_RESULT_TRUE);
 
   for (int i = 0; i < 60; ++i) {
@@ -825,7 +852,7 @@ TEST_F(HvacIntegrationScheduleF, mixedCommandsCheck) {
   weeklySchedule->Quarters[0] = (1 | (2 << 4));
   weeklySchedule->Quarters[1] = 3;
 
-  EXPECT_EQ(hvac->handleWeeklySchedule(&configFromServer),
+  EXPECT_EQ(hvac->handleWeeklySchedule(&configFromServer, false, false),
             SUPLA_CONFIG_RESULT_TRUE);
 
   EXPECT_CALL(proto, sendChannelValueChanged(0, _, 0, 0))

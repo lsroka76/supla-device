@@ -1,18 +1,5 @@
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "custom_relay.h"
 
@@ -77,34 +64,13 @@ void Supla::Control::CustomRelay::iterateAlways() {
   Supla::Control::Relay::iterateAlways();
 
   if (parser && (millis() - lastReadTime > 100)) {
-    if (!parser->isSourceConnected()) {
+    if (setOfflineIfSourceDisconnected()) {
       lastReadTime = millis();
-      channel.setStateOffline();
       return;
     }
     refreshParserSource(false);
     lastReadTime = millis();
     channel.setNewValue(isOn());
-    if (isOffline()) {
-      channel.setStateOffline();
-    } else {
-      channel.setStateOnline();
-    }
+    setChannelStateOnline(!isOffline());
   }
-}
-
-bool Supla::Control::CustomRelay::isOffline() {
-  if (useOfflineOnInvalidState && parser) {
-    if (getStateValue(false) == -1) {
-      return true;
-    }
-  }
-  return false;
-  //    return Supla::Control::VirtualRelay::isOffline();
-}
-
-void Supla::Control::CustomRelay::setUseOfflineOnInvalidState(
-    bool useOfflineOnInvalidState) {
-  this->useOfflineOnInvalidState = useOfflineOnInvalidState;
-  SUPLA_LOG_INFO("useOfflineOnInvalidState = %d", useOfflineOnInvalidState);
 }

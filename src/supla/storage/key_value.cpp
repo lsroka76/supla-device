@@ -1,21 +1,7 @@
+// SPDX-FileCopyrightText: AC SOFTWARE SP. Z O.O.
+// SPDX-License-Identifier: GPL-2.0-or-later
 
-/*
- Copyright (C) AC SOFTWARE SP. Z O.O.
-
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 2
- of the License, or (at your option) any later version.
-
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
-
- You should have received a copy of the GNU General Public License
- along with this program; if not, write to the Free Software
- Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-*/
+#ifndef ARDUINO_ARCH_AVR
 
 #include "key_value.h"
 
@@ -66,6 +52,12 @@ bool KeyValue::initFromMemory(uint8_t* input, size_t inputSize) {
     return false;
   }
 
+  auto parseError = [this](KeyValueElement* element) {
+    delete element;
+    removeAllMemory();
+    return false;
+  };
+
   auto endPtr = input + inputSize;
   while (input + SUPLA_STORAGE_KEY_SIZE + 1 + 2 < endPtr) {
     char key[SUPLA_STORAGE_KEY_SIZE + 1] = {};
@@ -80,8 +72,7 @@ bool KeyValue::initFromMemory(uint8_t* input, size_t inputSize) {
         if (input < endPtr) {
           element->setUInt8(*input);
         } else {
-          delete element;
-          return false;
+          return parseError(element);
         }
         input++;
         break;
@@ -92,8 +83,7 @@ bool KeyValue::initFromMemory(uint8_t* input, size_t inputSize) {
         if (input < endPtr) {
           element->setInt8(static_cast<int8_t>(*input));
         } else {
-          delete element;
-          return false;
+          return parseError(element);
         }
         input++;
         break;
@@ -106,8 +96,7 @@ bool KeyValue::initFromMemory(uint8_t* input, size_t inputSize) {
           memcpy(&value, input, sizeof(value));
           element->setUInt32(value);
         } else {
-          delete element;
-          return false;
+          return parseError(element);
         }
         input += 4;
         break;
@@ -120,8 +109,7 @@ bool KeyValue::initFromMemory(uint8_t* input, size_t inputSize) {
           memcpy(&value, input, sizeof(value));
           element->setInt32(value);
         } else {
-          delete element;
-          return false;
+          return parseError(element);
         }
         input += 4;
         break;
@@ -137,8 +125,7 @@ bool KeyValue::initFromMemory(uint8_t* input, size_t inputSize) {
           element->setBlob(buffer, size);
           delete[] buffer;
         } else {
-          delete element;
-          return false;
+          return parseError(element);
         }
         input += size;
         break;
@@ -154,15 +141,13 @@ bool KeyValue::initFromMemory(uint8_t* input, size_t inputSize) {
           element->setString(buffer);
           delete[] buffer;
         } else {
-          delete element;
-          return false;
+          return parseError(element);
         }
         input += size;
         break;
       }
       default: {
-        delete element;
-        return false;
+        return parseError(element);
       }
     }
     if (!first) {
@@ -173,6 +158,7 @@ bool KeyValue::initFromMemory(uint8_t* input, size_t inputSize) {
   }
 
   if (input < endPtr) {
+    removeAllMemory();
     return false;
   }
   return true;
@@ -230,9 +216,12 @@ bool KeyValue::getString(const char* key, char* value, size_t maxSize) {
 }
 
 int KeyValue::getStringSize(const char* key) {
+  if (key == nullptr) {
+    return -1;
+  }
   auto element = find(key);
   if (!element) {
-    return 0;
+    return -1;
   }
   return element->getStringSize();
 }
@@ -251,9 +240,12 @@ bool KeyValue::getBlob(const char* key, char* value, size_t blobSize) {
 }
 
 int KeyValue::getBlobSize(const char* key) {
+  if (key == nullptr) {
+    return -1;
+  }
   auto element = find(key);
   if (!element) {
-    return 0;
+    return -1;
   }
   return element->getBlobSize();
 }
@@ -311,7 +303,9 @@ bool KeyValue::setUInt32(const char* key, const uint32_t value) {
 }
 
 KeyValueElement::KeyValueElement(const char* keyName) {
-  strncpy(key, keyName, SUPLA_STORAGE_KEY_SIZE);
+  size_t keyLength = strnlen(keyName, SUPLA_STORAGE_KEY_SIZE);
+  memcpy(key, keyName, keyLength);
+  key[keyLength] = '\0';
 }
 
 KeyValueElement::~KeyValueElement() {
@@ -398,16 +392,19 @@ bool KeyValueElement::getString(char* value, size_t maxSize) {
 
 int KeyValueElement::getStringSize() {
   if (dataType != DATA_TYPE_STRING) {
-    return 0;
+    return -1;
   }
   return size;
 }
 
 bool KeyValueElement::setBlob(const char* value, size_t blobSize) {
+  if (value == nullptr && blobSize > 0) {
+    return false;
+  }
   if (dataType == DATA_TYPE_NOT_SET) {
     dataType = DATA_TYPE_BLOB;
     size = blobSize;
-    data.uint8ptr = new uint8_t[size];
+    data.uint8ptr = size > 0 ? new uint8_t[size] : nullptr;
   }
   if (dataType != DATA_TYPE_BLOB) {
     return false;
@@ -415,12 +412,14 @@ bool KeyValueElement::setBlob(const char* value, size_t blobSize) {
   if (blobSize != size) {
     delete[] data.uint8ptr;
     size = blobSize;
-    data.uint8ptr = new uint8_t[size];
+    data.uint8ptr = size > 0 ? new uint8_t[size] : nullptr;
   }
-  if (data.uint8ptr == nullptr) {
+  if (data.uint8ptr == nullptr && size > 0) {
     return false;
   }
-  memcpy(data.uint8ptr, value, blobSize);
+  if (blobSize > 0) {
+    memcpy(data.uint8ptr, value, blobSize);
+  }
   return true;
 }
 
@@ -430,7 +429,9 @@ bool KeyValueElement::getBlob(char* value, size_t blobSize) {
   }
 
   if (size == blobSize) {
-    memcpy(value, data.uint8ptr, blobSize);
+    if (blobSize > 0) {
+      memcpy(value, data.uint8ptr, blobSize);
+    }
     return true;
   }
   return false;
@@ -438,7 +439,7 @@ bool KeyValueElement::getBlob(char* value, size_t blobSize) {
 
 int KeyValueElement::getBlobSize() {
   if (dataType != DATA_TYPE_BLOB) {
-    return 0;
+    return -1;
   }
   return size;
 }
@@ -614,3 +615,5 @@ bool KeyValue::eraseKey(const char* key) {
 }
 
 };  // namespace Supla
+
+#endif  // !defined(ARDUINO_ARCH_AVR)
