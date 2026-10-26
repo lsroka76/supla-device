@@ -1,19 +1,20 @@
 <map id="Supla::Control::Button" name="Supla::Control::Button">
-<area shape="rect" id="Node000001" title=" " alt="" coords="296,388,441,414"/>
-<area shape="rect" id="Node000002" href="$classSupla_1_1Control_1_1SimpleButton.html" title=" " alt="" coords="182,313,368,339"/>
-<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="304,346,355,386,352,390,301,350"/>
-<area shape="rect" id="Node000003" href="$classSupla_1_1Element.html" title="Base class for all elements of SuplaDevice." alt="" coords="5,208,113,233"/>
-<area shape="poly" id="edge2_Node000002_Node000003" title=" " alt="" coords="99,238,251,310,248,315,97,243"/>
-<area shape="poly" id="edge3_Node000003_Node000003" title=" " alt="" coords="129,210,136,214,139,221,131,230,114,234,113,228,129,225,134,220,132,217,127,215"/>
-<area shape="rect" id="Node000004" href="$classSupla_1_1LocalAction.html" title=" " alt="" coords="210,208,340,233"/>
-<area shape="poly" id="edge4_Node000002_Node000004" title=" " alt="" coords="278,248,278,313,272,313,272,248"/>
-<area shape="rect" id="Node000005" href="$classSupla_1_1Control_1_1ButtonState.html" title=" " alt="" coords="364,208,540,233"/>
-<area shape="poly" id="edge5_Node000002_Node000005" title=" " alt="" coords="420,243,297,315,294,310,417,239"/>
-<area shape="rect" id="Node000006" href="$structSupla_1_1Io_1_1IoPin.html" title=" " alt="" coords="399,102,506,128"/>
-<area shape="poly" id="edge6_Node000005_Node000006" title=" " alt="" coords="455,143,455,207,450,207,450,143"/>
-<area shape="rect" id="Node000007" href="$classSupla_1_1Io_1_1Base.html" title=" " alt="" coords="399,5,506,31"/>
-<area shape="poly" id="edge7_Node000006_Node000007" title=" " alt="" coords="455,46,455,101,450,101,450,46"/>
-<area shape="poly" id="edge8_Node000007_Node000007" title=" " alt="" coords="523,9,533,18,524,27,507,30,506,24,522,22,527,18,520,13"/>
-<area shape="rect" id="Node000008" href="$classSupla_1_1ActionHandler.html" title=" " alt="" coords="392,313,534,339"/>
-<area shape="poly" id="edge9_Node000001_Node000008" title=" " alt="" coords="437,350,385,390,382,386,434,346"/>
+<area shape="rect" id="Node000001" title=" " alt="" coords="947,158,1092,184"/>
+<area shape="rect" id="Node000002" href="$classSupla_1_1Control_1_1SimpleButton.html" title=" " alt="" coords="635,109,821,134"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="834,135,923,150,951,155,950,160,922,155,833,140"/>
+<area shape="rect" id="Node000003" href="$classSupla_1_1Element.html" title="Base class for all elements of SuplaDevice." alt="" coords="414,59,521,85"/>
+<area shape="poly" id="edge2_Node000002_Node000003" title=" " alt="" coords="537,82,657,105,656,111,536,88"/>
+<area shape="poly" id="edge3_Node000003_Node000003" title=" " alt="" coords="443,42,451,35,467,33,482,35,491,41,494,51,490,60,485,58,488,50,487,44,480,40,467,38,453,40,446,46"/>
+<area shape="rect" id="Node000004" href="$classSupla_1_1LocalAction.html" title=" " alt="" coords="402,109,532,134"/>
+<area shape="poly" id="edge4_Node000002_Node000004" title=" " alt="" coords="548,119,635,119,635,124,548,124"/>
+<area shape="rect" id="Node000005" href="$classSupla_1_1Control_1_1ButtonState.html" title=" " alt="" coords="379,158,555,184"/>
+<area shape="poly" id="edge5_Node000002_Node000005" title=" " alt="" coords="553,152,656,132,657,138,554,157"/>
+<area shape="rect" id="Node000006" href="$structSupla_1_1Io_1_1IoPin.html" title=" " alt="" coords="174,158,281,184"/>
+<area shape="poly" id="edge6_Node000005_Node000006" title=" " alt="" coords="297,168,378,168,378,174,297,174"/>
+<area shape="rect" id="Node000007" href="$classSupla_1_1Io_1_1Base.html" title=" " alt="" coords="5,158,113,184"/>
+<area shape="poly" id="edge7_Node000006_Node000007" title=" " alt="" coords="128,168,173,168,173,174,128,174"/>
+<area shape="rect" id="Node000008" href="$classSupla_1_1ActionHandler.html" title=" " alt="" coords="657,158,799,184"/>
+<area shape="poly" id="edge8_Node000001_Node000008" title=" " alt="" coords="815,168,946,168,946,174,815,174"/>
+<area shape="rect" id="Node000009" href="$structSupla_1_1Control_1_1Button_1_1RuntimeFlags.html" title=" " alt="" coords="655,208,801,248"/>
+<area shape="poly" id="edge9_Node000001_Node000009" title=" " alt="" coords="815,209,922,189,955,182,957,187,923,194,816,215"/>
 </map>
