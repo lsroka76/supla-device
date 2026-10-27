@@ -32,10 +32,13 @@ class LittleFsConfig : public KeyValue {
   bool getBlob(const char* key, char* value, size_t blobSize) override;
   bool eraseKey(const char* key) override;
 
+  bool setLfsAutomaticClose(bool value);
+
  protected:
   int getBlobSize(const char* key) override;
   bool initLittleFs();
   int configMaxSize = SUPLA_LITTLEFS_CONFIG_BUF_SIZE;
+  bool lfsAutomaticClose = true;
 };
 };  // namespace Supla
 
