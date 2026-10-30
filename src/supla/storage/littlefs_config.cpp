@@ -48,6 +48,9 @@ bool Supla::LittleFsConfig::init() {
     return false;
   }
 
+  if (buf == nullptr)
+    buf = new uint8_t[configMaxSize];
+
   auto files = {ConfigFileName, BackupConfigFileName};
   initResult = false;
 
@@ -68,8 +71,6 @@ bool Supla::LittleFsConfig::init() {
         continue;
       }
 
-      if (buf == nullptr)
-	buf = new uint8_t[configMaxSize];
       if (buf == nullptr) {
         SUPLA_LOG_ERROR("LittleFsConfig: failed to allocate memory");
         cfg.close();
