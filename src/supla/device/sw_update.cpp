@@ -9,6 +9,7 @@
 #if !defined(SUPLA_TEST)
 #if defined(ARDUINO) || defined(SUPLA_LINUX) || defined(SUPLA_FREERTOS)
 // TODO(klew): implement sw update for remaining targets
+__attribute__((weak))
 Supla::Device::SwUpdate *Supla::Device::SwUpdate::Create(
     SuplaDeviceClass *sdc, const char *newUrl, Supla::SwUpdateMode mode) {
   (void)(newUrl);
