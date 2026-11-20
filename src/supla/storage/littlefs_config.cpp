@@ -9,23 +9,142 @@
 #include "littlefs_config.h"
 
 #include <LittleFS.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <supla/log_wrapper.h>
 #include <supla/storage/key_value.h>
 
+// Weak hooks fulfilled by z2s_little_fs.cpp so Supla and Z2S share saveMutex
+// and respect Z2S_endLittleFs(true) shutdown state, while remaining link-safe
+// if compiled in a non-Z2S sketch.
+bool Z2S_lockFs(uint32_t timeout_ms) __attribute__((weak));
+void Z2S_unlockFs() __attribute__((weak));
+
 namespace Supla {
-const char ConfigFileName[] = "/supla-dev.cfg";
+const char ConfigFileName[]       = "/supla-dev.cfg";
 const char BackupConfigFileName[] = "/supla-dev.cfg.bak";
-const char CustomCAFileName[] = "/custom_ca.pem";
-const char MqttCAFileName[] = "/mqtt_ca.pem";
+const char CustomCAFileName[]     = "/custom_ca.pem";
+const char MqttCAFileName[]       = "/mqtt_ca.pem";
 };  // namespace Supla
+
+namespace {
+
+static constexpr size_t   SUPLA_FS_PATH_MAX         = 96;
+static constexpr uint32_t SUPLA_FS_MUTEX_TIMEOUT_MS = 2000;
+
+// Allow auto-format at most once during early boot init() on a blank chip.
+static bool s_supla_allow_initial_format = true;
+
+class SuplaFsGuard {
+ public:
+  explicit SuplaFsGuard(uint32_t timeout_ms = SUPLA_FS_MUTEX_TIMEOUT_MS) {
+    if (Z2S_lockFs) {
+      locked_     = Z2S_lockFs(timeout_ms);
+      used_mutex_ = locked_;
+    } else {
+      locked_     = true;
+      used_mutex_ = false;
+    }
+  }
+
+  ~SuplaFsGuard() {
+    if (used_mutex_ && Z2S_unlockFs) {
+      Z2S_unlockFs();
+    }
+  }
+
+  bool locked() const { return locked_; }
+
+  SuplaFsGuard(const SuplaFsGuard&)            = delete;
+  SuplaFsGuard& operator=(const SuplaFsGuard&) = delete;
+
+ private:
+  bool locked_     = false;
+  bool used_mutex_ = false;
+};
+
+static bool atomicRenameLocked(const char* srcPath, const char* dstPath) {
+  if (!LittleFS.exists(srcPath)) {
+    return false;
+  }
+
+  if (LittleFS.rename(srcPath, dstPath)) {
+    return true;
+  }
+
+  if (LittleFS.exists(dstPath)) {
+    if (!LittleFS.remove(dstPath)) {
+      return false;
+    }
+    return LittleFS.rename(srcPath, dstPath);
+  }
+
+  return false;
+}
+
+static bool atomicWriteFileLocked(const char* dstPath,
+                                  const uint8_t* data,
+                                  size_t dataSize,
+                                  const char* backupPath = nullptr) {
+  if (!dstPath || (dataSize > 0 && !data)) {
+    return false;
+  }
+
+  char tmpPath[SUPLA_FS_PATH_MAX] = {};
+  int n = snprintf(tmpPath, sizeof(tmpPath), "%s.tmp", dstPath);
+  if (n < 0 || static_cast<size_t>(n) >= sizeof(tmpPath)) {
+    SUPLA_LOG_ERROR("LittleFsConfig: temp path truncated for \"%s\"", dstPath);
+    return false;
+  }
+
+  File tmp = LittleFS.open(tmpPath, "w");
+  if (!tmp) {
+    SUPLA_LOG_ERROR("LittleFsConfig: failed to open temp file \"%s\"", tmpPath);
+    return false;
+  }
+
+  size_t written = 0;
+  if (dataSize > 0) {
+    written = tmp.write(data, dataSize);
+  }
+  tmp.flush();
+  tmp.close();
+
+  if (written != dataSize) {
+    SUPLA_LOG_ERROR("LittleFsConfig: short write for \"%s\" (%u/%u B)",
+                    dstPath,
+                    static_cast<unsigned>(written),
+                    static_cast<unsigned>(dataSize));
+    LittleFS.remove(tmpPath);
+    return false;
+  }
+
+  if (backupPath && LittleFS.exists(dstPath)) {
+    if (!atomicRenameLocked(dstPath, backupPath)) {
+      SUPLA_LOG_WARNING("LittleFsConfig: failed to rotate \"%s\" to \"%s\"",
+                        dstPath,
+                        backupPath);
+    }
+  }
+
+  if (!atomicRenameLocked(tmpPath, dstPath)) {
+    SUPLA_LOG_ERROR("LittleFsConfig: failed to promote \"%s\" to \"%s\"",
+                    tmpPath,
+                    dstPath);
+    LittleFS.remove(tmpPath);
+    return false;
+  }
+
+  return true;
+}
+
+}  // namespace
 
 #define BIG_BLOG_SIZE_TO_BE_STORED_IN_FILE 32
 
 Supla::LittleFsConfig::LittleFsConfig(int configMaxSize)
     : configMaxSize(configMaxSize) {
-  
 }
 
 Supla::LittleFsConfig::~LittleFsConfig() {
@@ -43,13 +162,21 @@ bool Supla::LittleFsConfig::init() {
     return false;
   }
 
+  SuplaFsGuard guard;
+  if (!guard.locked()) {
+    SUPLA_LOG_ERROR("LittleFsConfig: mutex timeout in init()");
+    initResult = false;
+    return false;
+  }
+
   if (!initLittleFs()) {
     initResult = false;
     return false;
   }
 
-  if (buf == nullptr)
+  if (buf == nullptr) {
     buf = new uint8_t[configMaxSize];
+  }
 
   auto files = {ConfigFileName, BackupConfigFileName};
   initResult = false;
@@ -84,13 +211,11 @@ bool Supla::LittleFsConfig::init() {
         SUPLA_LOG_DEBUG("LittleFsConfig: read bytes %d, while file is %d bytes",
                         bytesRead,
                         fileSize);
-        //delete[] buf;
         continue;
       }
 
       SUPLA_LOG_DEBUG("LittleFsConfig: initializing storage from file...");
       initResult = initFromMemory(buf, fileSize);
-      //delete[] buf;
       SUPLA_LOG_DEBUG("LittleFsConfig: init result %s",
                       initResult ? "success" : "failure");
 
@@ -103,48 +228,47 @@ bool Supla::LittleFsConfig::init() {
       SUPLA_LOG_DEBUG("LittleFsConfig:: config file \"%s\" missing", file);
     }
   }
-  //LittleFs.end();
+
   return initResult;
 }
 
 void Supla::LittleFsConfig::commit() {
-  //uint8_t* buf = new uint8_t[configMaxSize];
   if (buf == nullptr) {
     SUPLA_LOG_ERROR("LittleFsConfig: failed to allocate memory");
     return;
   }
 
   memset(buf, 0, configMaxSize);
-
   size_t dataSize = serializeToMemory(buf, configMaxSize);
 
-  if (!initLittleFs()) {
-    //delete[] buf;
+  SuplaFsGuard guard;
+  if (!guard.locked()) {
+    SUPLA_LOG_ERROR("LittleFsConfig: mutex timeout in commit()");
     return;
   }
 
-  auto files = {ConfigFileName, BackupConfigFileName};
-
-  for (auto file : files) {
-    SUPLA_LOG_DEBUG("LittleFsConfig: writing to file \"%s\"", file);
-    File cfg = LittleFS.open(file, "w");
-    if (!cfg) {
-      SUPLA_LOG_ERROR(
-          "LittleFsConfig: failed to open config file \"%s\" for write", file);
-      //LittleFs.end();
-      //delete[] buf;
-      return;
-    }
-
-    cfg.write(buf, dataSize);
-    cfg.close();
+  if (!initLittleFs()) {
+    return;
   }
-  //delete[] buf;
-  //LittleFs.end();
+
+  SUPLA_LOG_DEBUG("LittleFsConfig: committing %u bytes atomically",
+                  static_cast<unsigned>(dataSize));
+
+  // Write to .tmp first, then rotate previous primary -> .bak, then promote .tmp -> primary.
+  if (!atomicWriteFileLocked(
+          ConfigFileName, buf, dataSize, BackupConfigFileName)) {
+    return;
+  }
+
+  // Ensure backup file also exists after the very first commit on a fresh chip.
+  if (!LittleFS.exists(BackupConfigFileName)) {
+    atomicWriteFileLocked(BackupConfigFileName, buf, dataSize, nullptr);
+  }
 }
 
 bool Supla::LittleFsConfig::getCustomCA(char* customCA, int maxSize) {
-  if (!initLittleFs()) {
+  SuplaFsGuard guard;
+  if (!guard.locked() || !initLittleFs()) {
     return false;
   }
 
@@ -152,7 +276,6 @@ bool Supla::LittleFsConfig::getCustomCA(char* customCA, int maxSize) {
     File file = LittleFS.open(CustomCAFileName, "r");
     if (!file) {
       SUPLA_LOG_ERROR("LittleFsConfig: failed to open custom CA file");
-      //LittleFs.end();
       return false;
     }
 
@@ -161,14 +284,12 @@ bool Supla::LittleFsConfig::getCustomCA(char* customCA, int maxSize) {
     if (fileSize > maxSize) {
       SUPLA_LOG_ERROR("LittleFsConfig: custom CA file is too big");
       file.close();
-      //LittleFs.end();
       return false;
     }
 
     int bytesRead = file.read(reinterpret_cast<uint8_t*>(customCA), fileSize);
-
     file.close();
-    //LittleFs.end();
+
     if (bytesRead != fileSize) {
       SUPLA_LOG_DEBUG("LittleFsConfig: read bytes %d, while file is %d bytes",
                       bytesRead,
@@ -180,12 +301,13 @@ bool Supla::LittleFsConfig::getCustomCA(char* customCA, int maxSize) {
   } else {
     SUPLA_LOG_DEBUG("LittleFsConfig:: custom ca file missing");
   }
-  //LittleFs.end();
+
   return true;
 }
 
 int Supla::LittleFsConfig::getCustomCASize() {
-  if (!initLittleFs()) {
+  SuplaFsGuard guard;
+  if (!guard.locked() || !initLittleFs()) {
     return 0;
   }
 
@@ -193,54 +315,46 @@ int Supla::LittleFsConfig::getCustomCASize() {
     File file = LittleFS.open(CustomCAFileName, "r");
     if (!file) {
       SUPLA_LOG_ERROR("LittleFsConfig: failed to open custom CA file");
-      //LittleFs.end();
-      return false;
+      return 0;
     }
 
     int fileSize = file.size();
-
     file.close();
-    //LittleFs.end();
     return fileSize;
   }
-  //LittleFs.end();
+
   return 0;
 }
 
 bool Supla::LittleFsConfig::setCustomCA(const char* customCA) {
+  if (customCA == nullptr) {
+    return false;
+  }
+
   size_t dataSize = strlen(customCA);
 
-  if (!initLittleFs()) {
+  SuplaFsGuard guard;
+  if (!guard.locked() || !initLittleFs()) {
     return false;
   }
 
-  File file = LittleFS.open(CustomCAFileName, "w");
-  if (!file) {
-    SUPLA_LOG_ERROR("LittleFsConfig: failed to open custom CA file for write");
-    //LittleFs.end();
-    return false;
-  }
-
-  file.write(reinterpret_cast<const uint8_t*>(customCA), dataSize);
-  file.close();
-  //LittleFs.end();
-  return true;
+  return atomicWriteFileLocked(
+      CustomCAFileName, reinterpret_cast<const uint8_t*>(customCA), dataSize);
 }
 
 bool Supla::LittleFsConfig::getMqttCA(char* mqttCA, int maxSize) {
-  if (!initLittleFs()) {
+  SuplaFsGuard guard;
+  if (!guard.locked() || !initLittleFs()) {
     return false;
   }
 
   if (!LittleFS.exists(MqttCAFileName)) {
-    //LittleFs.end();
     return false;
   }
 
   File file = LittleFS.open(MqttCAFileName, "r");
   if (!file) {
     SUPLA_LOG_ERROR("LittleFsConfig: failed to open MQTT CA file");
-    //LittleFs.end();
     return false;
   }
 
@@ -248,13 +362,12 @@ bool Supla::LittleFsConfig::getMqttCA(char* mqttCA, int maxSize) {
   if (fileSize >= maxSize) {
     SUPLA_LOG_ERROR("LittleFsConfig: MQTT CA file is too big");
     file.close();
-    //LittleFs.end();
     return false;
   }
 
   int bytesRead = file.read(reinterpret_cast<uint8_t*>(mqttCA), fileSize);
   file.close();
-  //LittleFs.end();
+
   if (bytesRead != fileSize) {
     return false;
   }
@@ -263,7 +376,8 @@ bool Supla::LittleFsConfig::getMqttCA(char* mqttCA, int maxSize) {
 }
 
 int Supla::LittleFsConfig::getMqttCASize() {
-  if (!initLittleFs()) {
+  SuplaFsGuard guard;
+  if (!guard.locked() || !initLittleFs()) {
     return 0;
   }
 
@@ -277,74 +391,86 @@ int Supla::LittleFsConfig::getMqttCASize() {
       SUPLA_LOG_ERROR("LittleFsConfig: failed to open MQTT CA file");
     }
   }
-  //LittleFs.end();
+
   return fileSize;
 }
 
 bool Supla::LittleFsConfig::setMqttCA(const char* mqttCA) {
-  if (mqttCA == nullptr || !initLittleFs()) {
+  if (mqttCA == nullptr) {
     return false;
   }
 
-  File file = LittleFS.open(MqttCAFileName, "w");
-  if (!file) {
-    SUPLA_LOG_ERROR("LittleFsConfig: failed to open MQTT CA file for write");
-    //LittleFs.end();
+  SuplaFsGuard guard;
+  if (!guard.locked() || !initLittleFs()) {
     return false;
   }
 
   size_t dataSize = strlen(mqttCA);
-  size_t bytesWritten = file.write(
-      reinterpret_cast<const uint8_t*>(mqttCA), dataSize);
-  file.close();
-  //LittleFs.end();
-  return bytesWritten == dataSize;
+  return atomicWriteFileLocked(
+      MqttCAFileName, reinterpret_cast<const uint8_t*>(mqttCA), dataSize);
 }
 
 bool Supla::LittleFsConfig::initLittleFs() {
-  bool result = LittleFS.begin();
+  bool result = LittleFS.begin(false);
   if (!result) {
-    SUPLA_LOG_WARNING("LittleFsConfig: formatting partition");
-    LittleFS.format();
-    result = LittleFS.begin();
-    if (!result) {
+    if (s_supla_allow_initial_format) {
+      SUPLA_LOG_WARNING(
+          "LittleFsConfig: initial mount failed - formatting partition");
+      if (LittleFS.format()) {
+        result = LittleFS.begin(false);
+      }
+      if (!result) {
+        SUPLA_LOG_ERROR(
+            "LittleFsConfig: failed to mount and to format partition");
+      }
+    } else {
       SUPLA_LOG_ERROR(
-          "LittleFsConfig: failed to mount and to format partition");
+          "LittleFsConfig: mount failed (runtime auto-format disabled)");
     }
   }
 
+  s_supla_allow_initial_format = false;
   return result;
 }
 
 void Supla::LittleFsConfig::removeAll() {
   SUPLA_LOG_DEBUG("LittleFsConfig remove all called");
 
-  if (!initLittleFs()) {
-    return;
-  }
-  LittleFS.remove(CustomCAFileName);
-  LittleFS.remove(MqttCAFileName);
+  {
+    SuplaFsGuard guard;
+    if (guard.locked() && initLittleFs()) {
+      LittleFS.remove(CustomCAFileName);
+      LittleFS.remove(MqttCAFileName);
 
-  File suplaDir = LittleFS.open("/supla", "r");
-  if (suplaDir && suplaDir.isDirectory()) {
-    File file = suplaDir.openNextFile();
-    while (file) {
-      if (!file.isDirectory()) {
-        SUPLA_LOG_DEBUG("LittleFsConfig: removing file /supla/%s", file.name());
-        char path[200] = {};
-        snprintf(path, sizeof(path), "/supla/%s", file.name());
-        file.close();
-        if (!LittleFS.remove(path)) {
-          SUPLA_LOG_ERROR("LittleFsConfig: failed to remove file");
+      File suplaDir = LittleFS.open("/supla", "r");
+      if (suplaDir && suplaDir.isDirectory()) {
+        File file = suplaDir.openNextFile();
+        while (file) {
+          bool isDir = file.isDirectory();
+          char path[200] = {};
+          if (!isDir) {
+            SUPLA_LOG_DEBUG("LittleFsConfig: removing file /supla/%s",
+                            file.name());
+            snprintf(path, sizeof(path), "/supla/%s", file.name());
+          }
+          file.close();
+
+          if (!isDir && path[0] != '\0') {
+            if (!LittleFS.remove(path)) {
+              SUPLA_LOG_ERROR("LittleFsConfig: failed to remove file");
+            }
+          }
+          file = suplaDir.openNextFile();
         }
+        suplaDir.close();
+      } else {
+        if (suplaDir) {
+          suplaDir.close();
+        }
+        SUPLA_LOG_DEBUG("LittleFsConfig: failed to open supla directory");
       }
-      file = suplaDir.openNextFile();
     }
-  } else {
-    SUPLA_LOG_DEBUG("LittleFsConfig: failed to open supla directory");
   }
-
-  //LittleFs.end();
 
   Supla::KeyValue::removeAll();
 }
@@ -356,41 +482,38 @@ bool Supla::LittleFsConfig::setBlob(const char* key,
     return false;
   }
 
+  char filename[SUPLA_FS_PATH_MAX] = {};
+  int n = snprintf(filename, sizeof(filename), "/supla/%s", key);
+  if (n < 0 || static_cast<size_t>(n) >= sizeof(filename)) {
+    SUPLA_LOG_ERROR("LittleFsConfig: blob key path too long \"%s\"", key);
+    return false;
+  }
+
   if (blobSize < BIG_BLOG_SIZE_TO_BE_STORED_IN_FILE) {
     bool result = Supla::KeyValue::setBlob(key, value, blobSize);
-    if (result && initLittleFs()) {
-      char filename[50] = {};
-      snprintf(filename, sizeof(filename), "/supla/%s", key);
-      if (LittleFS.exists(filename)) {
+    if (result) {
+      SuplaFsGuard guard;
+      if (guard.locked() && initLittleFs() && LittleFS.exists(filename)) {
         LittleFS.remove(filename);
       }
-      //LittleFs.end();
     }
     return result;
   }
 
   Supla::KeyValue::eraseKey(key);
   SUPLA_LOG_DEBUG("LittleFS: writing file %s", key);
-  if (!initLittleFs()) {
+
+  SuplaFsGuard guard;
+  if (!guard.locked() || !initLittleFs()) {
     return false;
   }
 
-  LittleFS.mkdir("/supla");
-
-  char filename[50] = {};
-  snprintf(filename, sizeof(filename), "/supla/%s", key);
-  File file = LittleFS.open(filename, "w");
-  if (!file) {
-    SUPLA_LOG_ERROR("LittleFsConfig: failed to open blob file \"%s\" for write",
-                    key);
-    //LittleFs.end();
-    return false;
+  if (!LittleFS.exists("/supla")) {
+    LittleFS.mkdir("/supla");
   }
 
-  file.write(reinterpret_cast<const uint8_t*>(value), blobSize);
-  file.close();
-  //LittleFs.end();
-  return true;
+  return atomicWriteFileLocked(
+      filename, reinterpret_cast<const uint8_t*>(value), blobSize);
 }
 
 bool Supla::LittleFsConfig::getBlob(const char* key,
@@ -409,35 +532,37 @@ bool Supla::LittleFsConfig::getBlob(const char* key,
         key, value, static_cast<size_t>(keyValueBlobSize));
   }
 
-  if (!initLittleFs()) {
+  char filename[SUPLA_FS_PATH_MAX] = {};
+  int n = snprintf(filename, sizeof(filename), "/supla/%s", key);
+  if (n < 0 || static_cast<size_t>(n) >= sizeof(filename)) {
     return false;
   }
 
-  char filename[50] = {};
-  snprintf(filename, sizeof(filename), "/supla/%s", key);
-  if (!LittleFS.exists(filename)) {
-    //LittleFs.end();
+  SuplaFsGuard guard;
+  if (!guard.locked() || !initLittleFs()) {
     return false;
   }
+
+  if (!LittleFS.exists(filename)) {
+    return false;
+  }
+
   File file = LittleFS.open(filename, "r");
   if (!file) {
     SUPLA_LOG_ERROR("LittleFsConfig: failed to open blob file \"%s\" for read",
                     key);
-    //LittleFs.end();
     return false;
   }
+
   size_t fileSize = file.size();
   if (fileSize > blobSize) {
     SUPLA_LOG_ERROR("LittleFsConfig: blob file does not fit in buffer");
     file.close();
-    //LittleFs.end();
     return false;
   }
 
   int bytesRead = file.read(reinterpret_cast<uint8_t*>(value), fileSize);
-
   file.close();
-  //LittleFs.end();
   return (bytesRead < 0) ? false : static_cast<size_t>(bytesRead) == fileSize;
 }
 
@@ -451,23 +576,30 @@ int Supla::LittleFsConfig::getBlobSize(const char* key) {
     return keyValueBlobSize;
   }
 
-  if (!initLittleFs()) {
+  char filename[SUPLA_FS_PATH_MAX] = {};
+  int n = snprintf(filename, sizeof(filename), "/supla/%s", key);
+  if (n < 0 || static_cast<size_t>(n) >= sizeof(filename)) {
     return -1;
   }
 
-  char filename[50] = {};
-  snprintf(filename, sizeof(filename), "/supla/%s", key);
+  SuplaFsGuard guard;
+  if (!guard.locked() || !initLittleFs()) {
+    return -1;
+  }
+
+  if (!LittleFS.exists(filename)) {
+    return -1;
+  }
+
   File file = LittleFS.open(filename, "r");
   if (!file) {
     SUPLA_LOG_DEBUG(
         "LittleFsConfig: failed to open blob file \"%s\", blob not found", key);
-    //LittleFs.end();
     return -1;
   }
-  int fileSize = file.size();
 
+  int fileSize = file.size();
   file.close();
-  //LittleFs.end();
   return fileSize;
 }
 
@@ -478,16 +610,21 @@ bool Supla::LittleFsConfig::eraseKey(const char* key) {
 
   bool removed = Supla::KeyValue::eraseKey(key);
 
-  if (!initLittleFs()) {
+  char filename[SUPLA_FS_PATH_MAX] = {};
+  int n = snprintf(filename, sizeof(filename), "/supla/%s", key);
+  if (n < 0 || static_cast<size_t>(n) >= sizeof(filename)) {
     return removed;
   }
 
-  char filename[50] = {};
-  snprintf(filename, sizeof(filename), "/supla/%s", key);
+  SuplaFsGuard guard;
+  if (!guard.locked() || !initLittleFs()) {
+    return removed;
+  }
+
   if (LittleFS.exists(filename) && LittleFS.remove(filename)) {
     removed = true;
   }
-  //LittleFs.end();
+
   return removed;
 }
 
